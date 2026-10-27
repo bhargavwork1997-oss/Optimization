@@ -59,7 +59,7 @@ the installer's, and the installer leaves bundle-managed jobs alone.
 ## Local tests (no Databricks)
 
 ```bash
-pip install pyspark==3.5.3 pytest     # Java 17+
+python3.11 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt   # Java 17; not Python 3.14+
 pytest -q -m "not slow"                # unit, regression (golden), chaos, governance, security
 pytest -q -m slow                      # 5x volume
 ```

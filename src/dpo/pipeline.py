@@ -129,7 +129,7 @@ class Ctx:
         cfg.validate()
         self.spark, self.cfg = spark, cfg
         self.run_id = run_id or uuid.uuid4().hex[:12]
-        self.run_ts = dt.datetime.utcnow().replace(microsecond=0)
+        self.run_ts = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
         end = dt.date.fromisoformat(cfg.end_date) if cfg.end_date else dt.date.today()
         self.end_date = end
         self.start_date = end - dt.timedelta(days=cfg.lookback_days)
