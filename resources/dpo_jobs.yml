@@ -3,7 +3,7 @@
 resources:
   jobs:
     dpo_pipeline:
-      name: dpo-pipeline-${bundle.target}
+      name: dpo-pipeline-${var.profile}
       description: Databricks Processing Optimization - ingest, attribute cost, diagnose, score, narrate
       max_concurrent_runs: 1
       schedule:

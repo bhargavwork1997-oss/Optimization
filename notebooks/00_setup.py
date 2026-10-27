@@ -1,6 +1,8 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 00 · Setup, preflight and governance (admins)
+# MAGIC # 00 · Governance re-apply (admins)
+# MAGIC First-time installation: use **`00_install`** instead. This notebook re-applies grants, views and
+# MAGIC ownership; the daily `dpo-governance` job runs it.
 # MAGIC 1. **Preflight** – catalog, system-table access, groups, your rights, risky settings; with the fix for each gap.
 # MAGIC 2. **Governance plan** – every statement the role model needs (`plan_only`), or applied (`apply`).
 # MAGIC

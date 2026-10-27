@@ -27,5 +27,6 @@
     "operators_can_create_schemas": true
   },
   "ai_enabled": false,
-  "contract_prices": {}
+  "contract_prices": {},
+  "workspace_hosts": []
 }

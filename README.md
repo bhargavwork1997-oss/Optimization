@@ -31,21 +31,30 @@ ops        run log, DQ, rule status, append-only audit log, governance log
 
 > Free Edition is non-commercial and has no access control: **never load client telemetry into it.**
 
-Going live at a client: edit `enterprise_prod.json` (catalog, storage, `workspace_ids`, contract prices,
-group names), deploy the `enterprise_prod` target, have an admin run `00_setup` with `apply`. No code changes.
 See `GOVERNANCE.md` and the threat model (build guide, section 12).
 
-## Quick start — Free Edition
+## Install — one notebook, Run all
 
 1. **Workspace → Create → Git folder** → this repo.
-2. `notebooks/00_setup` → profile `free_edition` → `apply` → Run all.
-3. `notebooks/01_generate_synthetic_data` → `scale=small` → Run all.
-4. `notebooks/02_run_pipeline` → Run all. The last cell is the backlog.
-5. `notebooks/04_regression_tests` → every check `passed = true`.
-6. Optional: `03_optimization_lab` (before/after proof), dashboard from `dashboards/dashboard_datasets.sql`.
+2. Open `notebooks/00_install` → **Run all**. The profile is detected from the workspace address
+   (`workspace_hosts` in each profile), so nothing else needs choosing on Free Edition.
+3. Enterprise only: before step 2, put the workspace host, catalog, `workspace_ids`, prices and group names in
+   `config/environments/enterprise_prod.json`, and fill the two widgets `pipeline_run_as` / `governance_run_as`
+   with the service-principal application IDs.
 
-CLI: `databricks bundle deploy -t dev && databricks bundle run dpo_pipeline -t dev`
-(the `dev` target uses your `Optimization` CLI profile).
+`00_install` first runs an **access gate** that changes nothing. If anything is wrong (you are not a DPO admin,
+groups missing, system tables unreadable for you or for the operators group, a service principal in the wrong
+group, the profile bound to another workspace, real data with governance off) it stops with **one error listing
+every problem and its fix**. When the gate passes it runs, in dependency order and in parallel where possible:
+governance base → synthetic data (synthetic profiles) → pipeline → secured reporting views → verification →
+scheduled jobs, with the optimisation lab and regression tests running alongside the pipeline. Safe to re-run;
+`mode = check_only` runs the gate alone.
+
+Day to day you only open `02_run_pipeline` (manual run), `06_governance_audit` (monthly) and the dashboard.
+`00_setup` re-applies governance and is what the daily governance job runs.
+
+CLI alternative (CI/CD): `databricks bundle deploy -t <dev|enterprise_dev|enterprise_prod>`; job names match
+the installer's, and the installer leaves bundle-managed jobs alone.
 
 ## Local tests (no Databricks)
 
@@ -59,8 +68,8 @@ pytest -q -m slow                      # 5x volume
 
 ```
 config/       rules.json (17 rules) · environments/*.json (profiles)
-src/dpo/      config · governance · transforms · synth · pipeline · rules · recommend · validation
-notebooks/    00_setup · 01_generate_synthetic_data · 02_run_pipeline · 03_optimization_lab
+src/dpo/      config · governance · installer · transforms · synth · pipeline · rules · recommend · validation
+notebooks/    00_install · 00_setup · 01_generate_synthetic_data · 02_run_pipeline · 03_optimization_lab
               04_regression_tests · 05_stress_tests · 06_governance_audit · _common
 dashboards/   dashboard_datasets.sql
 docs/         data-contract.md · dashboard-guide.md · ado-backlog.md

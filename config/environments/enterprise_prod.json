@@ -1,5 +1,5 @@
 {
-  "description": "Enterprise production. Edit catalog, managed_location, workspace_ids, price_multiplier and group names for the client, then deploy with the enterprise_prod bundle target.",
+  "description": "Enterprise production. Edit workspace_hosts, catalog, managed_location, workspace_ids, contract_prices/price_multiplier and group names for the client, then open notebooks/00_install and Run all.",
   "catalog": "dpo",
   "schema_prefix": "",
   "managed_location": null,
@@ -37,5 +37,6 @@
     "ai_allow_external": false
   },
   "ai_enabled": false,
-  "contract_prices": {}
+  "contract_prices": {},
+  "workspace_hosts": []
 }

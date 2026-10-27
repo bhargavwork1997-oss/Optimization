@@ -43,6 +43,34 @@ _ENDPOINT = re.compile(r"^[A-Za-z0-9_.-]+$")
 _CC_VALUE = re.compile(r"^[A-Za-z0-9_.()@ -]+$")
 _SKU_LIKE = re.compile(r"^[A-Za-z0-9_%]+$")
 _LOCATION = re.compile(r"^(abfss|s3|gs|r2)://[A-Za-z0-9@._/:-]+$")
+_HOST = re.compile(r"^[a-z0-9.-]+$")
+
+
+def normalize_host(host: Optional[str]) -> Optional[str]:
+    """'https://adb-1.2.azuredatabricks.net/?o=1' -> 'adb-1.2.azuredatabricks.net'"""
+    if not host:
+        return None
+    h = host.strip().lower()
+    h = re.sub(r"^https?://", "", h)
+    return h.split("/")[0].split("?")[0] or None
+
+
+def detect_profile(host: Optional[str], profile_dir: Optional[str] = None,
+                   default: str = "free_edition") -> tuple[str, str]:
+    """Pick the profile whose `workspace_hosts` contains this workspace. Returns (profile, reason)."""
+    profile_dir = profile_dir or PROFILE_DIR
+    env = os.environ.get("DPO_PROFILE")
+    if env:
+        return env, "DPO_PROFILE environment variable"
+    h = normalize_host(host)
+    if h:
+        for f in sorted(os.listdir(profile_dir)):
+            if f.endswith(".json"):
+                with open(os.path.join(profile_dir, f)) as fh:
+                    hosts = [normalize_host(x) for x in json.load(fh).get("workspace_hosts", [])]
+                if h in hosts:
+                    return f[:-5], f"workspace {h} is listed in {f}"
+    return default, f"no profile lists workspace {h or '(unknown)'}; defaulting to {default}"
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _DEFAULT_RULES = os.path.join(_ROOT, "config", "rules.json")
@@ -93,6 +121,7 @@ class DPOConfig:
     price_multiplier: float = 1.0             # contract discount: 0.8 = 20% off list
     contract_prices: dict = field(default_factory=dict)  # {"%ALL_PURPOSE%": 0.40} USD/DBU, SKU LIKE pattern
     workspace_ids: list = field(default_factory=list)  # scope account-wide system tables; [] = all
+    workspace_hosts: list = field(default_factory=list)  # workspaces this profile may run in (auto-detect + guard)
     ai_enabled: bool = False
     ai_endpoint: str = "databricks-meta-llama-3-3-70b-instruct"
     ai_max_rows: int = 25
@@ -187,6 +216,9 @@ class DPOConfig:
         for c in self.inventory_catalogs:
             if not _IDENT.match(c):
                 raise ValueError(f"illegal characters in inventory catalog: {c!r}")
+        for h in self.workspace_hosts:
+            if not normalize_host(h) or not _HOST.match(normalize_host(h)):
+                raise ValueError(f"bad workspace host: {h!r}")
         if self.managed_location and not _LOCATION.match(self.managed_location):
             raise ValueError(f"managed_location must be a cloud URI without quotes: {self.managed_location!r}")
         for name in list(g["groups"].values()) + list(g["cost_center_groups"]) + list(g["authorized_principals"]):

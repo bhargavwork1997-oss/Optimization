@@ -11,5 +11,8 @@
     "enforce": false,
     "apply_grants": false
   },
-  "ai_enabled": true
+  "ai_enabled": true,
+  "workspace_hosts": [
+    "dbc-858dc22a-1203.cloud.databricks.com"
+  ]
 }
