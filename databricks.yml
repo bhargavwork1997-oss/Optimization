@@ -1,0 +1,28 @@
+# Databricks Asset Bundle for the DPO accelerator.
+# Deploy:  databricks bundle validate && databricks bundle deploy -t dev
+# Run:     databricks bundle run dpo_pipeline -t dev
+bundle:
+  name: dpo-accelerator
+
+include:
+  - resources/*.yml
+
+variables:
+  ingest_notebook:
+    description: Synthetic generator (POC) or system-tables source (client)
+    default: ../notebooks/01_generate_logs.py
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://<your-free-edition-workspace>.cloud.databricks.com   # copy from your browser URL
+
+  client:
+    mode: production
+    variables:
+      ingest_notebook: ../notebooks/01b_system_tables_source.sql
+    workspace:
+      host: https://adb-<workspace-id>.<n>.azuredatabricks.net           # client Azure workspace
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
