@@ -3,4 +3,17 @@ __pycache__/
 *.pyc
 .DS_Store
 .venv/
+.pytest_cache/
+spark-warehouse/
+metastore_db/
+derby.log
+# never commit client data, exports or credentials
+*.csv
+*.parquet
+*.xlsx
+exports/
+.env
+*.pem
+*.key
+.databrickscfg
 .vscode/

@@ -1,0 +1,41 @@
+{
+  "description": "Enterprise production. Edit catalog, managed_location, workspace_ids, price_multiplier and group names for the client, then deploy with the enterprise_prod bundle target.",
+  "catalog": "dpo",
+  "schema_prefix": "",
+  "managed_location": null,
+  "source_mode": "system",
+  "lookback_days": 30,
+  "price_multiplier": 1.0,
+  "workspace_ids": [],
+  "inventory_catalogs": [],
+  "inventory_max_tables": 2000,
+  "log_retention_days": 365,
+  "governance": {
+    "enforce": true,
+    "apply_grants": true,
+    "manage_ownership": true,
+    "grant_system_access": false,
+    "revoke_drift": true,
+    "fail_on_error": true,
+    "groups": {
+      "admins": "dpo-admins",
+      "operators": "dpo-operators",
+      "analysts": "dpo-analysts",
+      "viewers": "dpo-viewers"
+    },
+    "cost_center_groups": {
+      "finance-cost-owners": [
+        "cc-finance"
+      ],
+      "sales-cost-owners": [
+        "cc-sales"
+      ]
+    },
+    "mask_identities_for_viewers": true,
+    "classification": "confidential",
+    "retain_raw_sql": false,
+    "ai_allow_external": false
+  },
+  "ai_enabled": false,
+  "contract_prices": {}
+}

@@ -1,0 +1,35 @@
+name: dpo-ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      # gitleaks-action is free for personal accounts; organisations need GITLEAKS_LICENSE
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: "17"}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install pyspark==3.5.3 pytest
+      - name: Unit, regression, chaos, governance, security
+        run: pytest -q -m "not slow"
+      - name: Volume (medium)
+        if: github.event_name == 'push'
+        run: pytest -q -m slow

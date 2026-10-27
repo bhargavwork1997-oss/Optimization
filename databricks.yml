@@ -1,6 +1,11 @@
 # Databricks Asset Bundle for the DPO accelerator.
-# Deploy:  databricks bundle validate && databricks bundle deploy -t dev
-# Run:     databricks bundle run dpo_pipeline -t dev
+#
+# One code base, three targets. Moving from Free Edition to enterprise = deploy another target:
+#   databricks bundle deploy -t dev               # your Free Edition workspace (profile free_edition)
+#   databricks bundle deploy -t enterprise_dev    # client dev / UAT workspace
+#   databricks bundle deploy -t enterprise_prod --var service_principal=<app-id> \
+#                                               --var admin_service_principal=<app-id>
+# Each target selects a profile in config/environments/ (catalog, sources, governance).
 bundle:
   name: dpo-accelerator
 
@@ -8,22 +13,94 @@ include:
   - resources/*.yml
 
 variables:
-  ingest_notebook:
-    description: Synthetic generator (POC) or system-tables source (client)
-    default: ../notebooks/01_generate_logs.py
+  profile:
+    description: Profile file in config/environments/ (free_edition | enterprise_dev | enterprise_prod)
+    default: free_edition
+  admins_group:
+    default: dpo-admins
+  operators_group:
+    default: dpo-operators
+  analysts_group:
+    default: dpo-analysts
+  service_principal:
+    description: Application ID of the pipeline service principal (member of the operators group ONLY)
+    default: ""
+  admin_service_principal:
+    description: Application ID of the governance service principal (member of the admins group)
+    default: ""
 
 targets:
+  # Free Edition: synthetic data only, single user, governance not enforced.
   dev:
     mode: development
     default: true
     workspace:
       host: https://dbc-858dc22a-1203.cloud.databricks.com
-      profile: Optimization   # copy from your browser URL
+      profile: Optimization        # Databricks CLI auth profile in ~/.databrickscfg
+    resources:
+      jobs:
+        dpo_tests: &tests_job
+          name: dpo-tests-${bundle.target}
+          max_concurrent_runs: 1
+          parameters:
+            - {name: profile, default: "${var.profile}"}
+          tasks:
+            - task_key: regression
+              notebook_task: {notebook_path: ./notebooks/04_regression_tests.py}
+            - task_key: stress
+              depends_on: [{task_key: regression}]
+              notebook_task:
+                notebook_path: ./notebooks/05_stress_tests.py
+                base_parameters: {volume_scale: medium}
 
-  client:
-    mode: production
-    variables:
-      ingest_notebook: ../notebooks/01b_system_tables_source.sql
+  enterprise_dev:
+    mode: development
     workspace:
-      host: https://adb-<workspace-id>.<n>.azuredatabricks.net           # client Azure workspace
+      host: https://adb-<dev-workspace-id>.<n>.azuredatabricks.net
+    variables:
+      profile: enterprise_dev
+    permissions:
+      - {level: CAN_MANAGE, group_name: "${var.admins_group}"}
+      - {level: CAN_RUN, group_name: "${var.operators_group}"}
+      - {level: CAN_VIEW, group_name: "${var.analysts_group}"}
+    resources:
+      jobs:
+        dpo_tests: *tests_job
+
+  enterprise_prod:
+    mode: production
+    workspace:
+      host: https://adb-<prod-workspace-id>.<n>.azuredatabricks.net
       root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      profile: enterprise_prod
+    run_as:
+      service_principal_name: ${var.service_principal}
+    # Who can see, run or change the deployed code and jobs (also applied to the bundle folder).
+    permissions:
+      - {level: CAN_MANAGE, group_name: "${var.admins_group}"}
+      - {level: CAN_RUN, group_name: "${var.operators_group}"}
+      - {level: CAN_VIEW, group_name: "${var.analysts_group}"}
+    resources:
+      jobs:
+        # Grants, ownership, views and drift revocation run under a separate admin identity:
+        # the pipeline identity can never change who sees what.
+        dpo_governance:
+          name: dpo-governance-${bundle.target}
+          max_concurrent_runs: 1
+          run_as:
+            service_principal_name: ${var.admin_service_principal}
+          schedule:
+            quartz_cron_expression: "0 0 8 * * ?"     # daily, after the pipeline
+            timezone_id: Asia/Kolkata
+            pause_status: PAUSED
+          parameters:
+            - {name: profile, default: "${var.profile}"}
+          tasks:
+            - task_key: apply_governance
+              notebook_task:
+                notebook_path: ./notebooks/00_setup.py
+                base_parameters: {apply_governance: apply}
+          permissions:
+            - {level: CAN_MANAGE, group_name: "${var.admins_group}"}
+          tags: {app: dpo-accelerator, cost_center: platform-finops}

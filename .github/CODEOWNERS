@@ -1,0 +1,8 @@
+# Changes to access control, environments, rules or deployment need a DPO admin's review.
+# Replace the team with your GitHub team; enable "Require review from Code Owners" on main.
+/config/environments/   @bhargavwork1997-oss/dpo-admins
+/config/rules.json      @bhargavwork1997-oss/dpo-admins
+/src/dpo/governance.py  @bhargavwork1997-oss/dpo-admins
+/databricks.yml         @bhargavwork1997-oss/dpo-admins
+/resources/             @bhargavwork1997-oss/dpo-admins
+/.github/               @bhargavwork1997-oss/dpo-admins
