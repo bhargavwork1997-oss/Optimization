@@ -133,10 +133,12 @@ def test_service_principal_least_privilege_checks():
 
 # --------------------------------------------------------------- job creation --
 class _FakeJobs:
-    def __init__(self, existing=None):
-        self.existing, self.calls = existing or {}, []
+    def __init__(self, existing=None, bundle_jobs=()):
+        self.existing, self.calls, self.bundle_jobs = existing or {}, [], list(bundle_jobs)
 
-    def list(self, name):
+    def list(self, name=None):
+        if name is None:
+            return self.bundle_jobs
         return [NS(job_id=self.existing[name][0])] if name in self.existing else []
 
     def get(self, job_id):
@@ -186,6 +188,23 @@ def test_schedule_jobs_create_update_and_respect_bundle():
     fresh = _FakeJobs()
     out = schedule_jobs(cfg, NS(jobs=fresh), "/Workspace/x")
     assert [o["action"] for o in out] == ["created", "created"]
+
+
+def test_installer_never_duplicates_bundle_jobs_even_with_dev_prefix():
+    pytest.importorskip("databricks.sdk")
+    from dpo.config import DPOConfig
+    from dpo.installer import schedule_jobs
+    cfg = DPOConfig.from_profile("enterprise_dev")
+    bundle_job = NS(job_id=42, settings=NS(name="[dev bhargav] dpo-pipeline-enterprise_dev",
+                                           tags={"app": "dpo-accelerator", "dpo_profile": "enterprise_dev"},
+                                           deployment=NS(kind="JobDeploymentKind.BUNDLE")))
+    other_profile = NS(job_id=43, settings=NS(name="dpo-pipeline-free_edition",
+                                              tags={"app": "dpo-accelerator", "dpo_profile": "free_edition"},
+                                              deployment=NS(kind="JobDeploymentKind.BUNDLE")))
+    fake = _FakeJobs(bundle_jobs=[bundle_job, other_profile])
+    out = schedule_jobs(cfg, NS(jobs=fake), "/Workspace/x")
+    assert out == [{"job": "[dev bhargav] dpo-pipeline-enterprise_dev", "action": "managed by asset bundle", "id": 42}]
+    assert fake.calls == []                                      # nothing created or changed
 
 
 # ------------------------------------------------------- end-to-end installs --

@@ -2,3 +2,5 @@
 pyspark==3.5.3
 pytest>=8
 databricks-sdk>=0.40
+pyyaml>=6
+jsonschema>=4.20

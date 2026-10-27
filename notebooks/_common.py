@@ -12,7 +12,24 @@
 import os
 import sys
 
-REPO_ROOT = os.path.abspath(os.path.join(os.getcwd(), ".."))
+def _project_root():
+    """Folder holding src/ and config/. Works in a Git folder and in a bundle deployment
+    (<root_path>/files/...): first the notebook's working directory, then the notebook path."""
+    candidates = [os.path.abspath(os.path.join(os.getcwd(), ".."))]
+    try:
+        nb = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
+        nb = nb if nb.startswith("/Workspace") else "/Workspace" + nb
+        candidates.append(os.path.dirname(os.path.dirname(nb)))
+    except Exception:
+        pass
+    for c in candidates:
+        if os.path.isdir(os.path.join(c, "src", "dpo")) and os.path.isdir(os.path.join(c, "config")):
+            return c
+    raise RuntimeError(f"Cannot find the DPO project (src/dpo and config/) from {candidates}. "
+                       "Run notebooks from the repo's notebooks/ folder or a bundle deployment.")
+
+
+REPO_ROOT = _project_root()
 SRC = os.path.join(REPO_ROOT, "src")
 if SRC not in sys.path:
     sys.path.insert(0, SRC)

@@ -59,11 +59,15 @@ Viewer row visibility comes from `cost_center_groups` in the profile and from ro
    GRANT USE SCHEMA, SELECT ON SCHEMA system.access   TO `dpo-admins`;
    GRANT CREATE CATALOG ON METASTORE TO `dpo-admins`;   -- or pre-create catalog dpo
    ```
-4. Put the workspace host in `workspace_hosts` of `enterprise_prod.json` (the profile then refuses to run in
-   any other workspace).
-5. A `dpo-admins` member opens `notebooks/00_install`, enters the two service-principal application IDs and
-   clicks **Run all**. The access gate verifies all of the above and stops with a single error listing every gap;
-   once it passes, setup, first pipeline run, reporting views and both scheduled jobs are done in one go.
+4. Deploy with the bundle from CI (`.github/workflows/deploy.yml`) or the CLI. The deploy identity needs the
+   "Service principal: User" role on `sp-dpo` and `sp-dpo-admin`; the bundle resolves both by name.
+5. `databricks bundle run dpo_install -t enterprise_prod`. It runs as `sp-dpo-admin`, verifies all of the above
+   with the access gate (one error listing every gap, nothing changed) and then performs setup, the first
+   pipeline run and the reporting views. Without the CLI, an admin can run `notebooks/00_install` instead.
+
+Bundle-level safeguards (enforced by `tests/test_bundle.py`): production deploys to the deployer's own folder,
+never `/Workspace/Shared` (writable by all users); permissions are per job, so `dpo_install` and
+`dpo_governance` (admin identity) are admins-only and operators can run only the pipeline.
 
 ## Dashboards
 

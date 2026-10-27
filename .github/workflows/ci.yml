@@ -18,6 +18,20 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  bundle:
+    name: asset-bundle compliance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - uses: databricks/setup-cli@main           # pin to a release tag or commit SHA
+      - run: pip install pyyaml jsonschema pytest
+      - name: Export the CLI's bundle schema
+        run: databricks bundle schema > "$RUNNER_TEMP/bundle_schema.json"
+      - name: Structure, permissions and schema checks
+        run: DPO_BUNDLE_SCHEMA="$RUNNER_TEMP/bundle_schema.json" pytest -q tests/test_bundle.py
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -28,7 +42,7 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.11"}
       - run: pip install -r requirements-dev.txt
-      - name: Unit, regression, chaos, governance, security
+      - name: Unit, regression, chaos, governance, security, installer
         run: pytest -q -m "not slow"
       - name: Volume (medium)
         if: github.event_name == 'push'
