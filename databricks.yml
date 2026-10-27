@@ -17,7 +17,8 @@ targets:
     mode: development
     default: true
     workspace:
-      host: https://dbc-858dc22a-1203.cloud.databricks.com   # copy from your browser URL
+      host: https://dbc-858dc22a-1203.cloud.databricks.com
+      profile: Optimization   # copy from your browser URL
 
   client:
     mode: production
