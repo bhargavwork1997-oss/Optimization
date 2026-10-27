@@ -143,7 +143,14 @@ targets:
           service_principal: sp-dpo-admin
     run_as:
       service_principal_name: ${var.service_principal}
-    # Permissions are per job, not bundle-wide: jobs that run as the admin identity are admins-only.
+    # Admins manage; read-only on the deployed code for both run-as identities: the bundle folder is the deployer's own
+    # (UI or CI), and jobs running as the service principals must be able to read the notebooks there.
+    # CAN_VIEW on jobs grants nothing beyond viewing.
+    permissions:
+      - {level: CAN_MANAGE, group_name: "${var.admins_group}"}     # deployers (UI or CI) keep control
+      - {level: CAN_VIEW, service_principal_name: "${var.service_principal}"}
+      - {level: CAN_VIEW, service_principal_name: "${var.admin_service_principal}"}
+    # Job permissions are per job, not bundle-wide: jobs that run as the admin identity are admins-only.
     # With bundle-wide CAN_RUN an operator could "run now" with changed parameters (e.g. another
     # catalog) and borrow the admin service principal's rights.
     resources:
@@ -153,15 +160,13 @@ targets:
             quartz_cron_expression: "0 30 6 * * ?"
             timezone_id: Asia/Kolkata
             pause_status: UNPAUSED    # runs daily; dpo_install must have succeeded once
-          permissions:
-            - {level: CAN_MANAGE, group_name: "${var.admins_group}"}
+          permissions:              # + bundle-level admins CAN_MANAGE
             - {level: CAN_MANAGE_RUN, group_name: "${var.operators_group}"}
             - {level: CAN_VIEW, group_name: "${var.analysts_group}"}
         dpo_install:
           run_as:
             service_principal_name: ${var.admin_service_principal}
-          permissions:
-            - {level: CAN_MANAGE, group_name: "${var.admins_group}"}
+          # permissions: bundle-level only (admins manage) -> admins-only job
         dpo_governance:
           name: dpo-governance-${var.profile}
           max_concurrent_runs: 1
@@ -180,5 +185,4 @@ targets:
                 notebook_path: ./notebooks/00_setup.py
                 base_parameters: {apply_governance: apply}
           tags: {app: dpo-accelerator, dpo_profile: "${var.profile}"}
-          permissions:
-            - {level: CAN_MANAGE, group_name: "${var.admins_group}"}
+          # permissions: bundle-level only (admins manage) -> admins-only job

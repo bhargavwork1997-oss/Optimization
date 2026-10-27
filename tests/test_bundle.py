@@ -50,6 +50,9 @@ def _jobs_for(target):
         jobs[k] = _merge(jobs.get(k, {}), j)
         if "tasks" in j:
             origin[k] = BUNDLE
+    top = root["targets"][target].get("permissions", root.get("permissions", []))
+    for j in jobs.values():                     # the CLI applies bundle-level permissions to every job
+        j["permissions"] = list(top) + list(j.get("permissions", []))
     return jobs, origin
 
 
@@ -99,14 +102,18 @@ def test_production_target_follows_bundle_production_rules():
     assert not prod["workspace"]["root_path"].startswith("/Workspace/Shared"), "Shared is writable by all users"
     for v in ("service_principal", "admin_service_principal"):
         assert "lookup" in prod["variables"][v], f"{v} must be resolved, not left empty"
-    assert "permissions" not in prod, "bundle-wide permissions would let operators run admin-identity jobs"
+    # bundle-wide permissions: admins manage, run-as SPs read the code; never operators or analysts
+    for p in prod.get("permissions", []):
+        assert (p["level"], p.get("group_name")) == ("CAN_MANAGE", "${var.admins_group}") or (
+            p["level"] == "CAN_VIEW" and p.get("service_principal_name") in (
+                "${var.service_principal}", "${var.admin_service_principal}")), p
 
 
 @pytest.mark.parametrize("target", ["enterprise_dev", "enterprise_prod"])
 def test_admin_identity_jobs_are_admins_only(target):
     jobs, _ = _jobs_for(target)
     for k in ("dpo_install", "dpo_governance"):
-        groups = {(p["level"], p.get("group_name")) for p in jobs[k].get("permissions", [])}
+        groups = {(p["level"], p.get("group_name")) for p in jobs[k].get("permissions", []) if p.get("group_name")}
         assert groups == {("CAN_MANAGE", "${var.admins_group}")}, f"{target}/{k}: {groups}"
     pipe = {p.get("group_name"): p["level"] for p in jobs["dpo_pipeline"]["permissions"]}
     assert pipe["${var.operators_group}"] == "CAN_MANAGE_RUN"
