@@ -59,9 +59,11 @@ Viewer row visibility comes from `cost_center_groups` in the profile and from ro
    GRANT USE SCHEMA, SELECT ON SCHEMA system.access   TO `dpo-admins`;
    GRANT CREATE CATALOG ON METASTORE TO `dpo-admins`;   -- or pre-create catalog dpo
    ```
-4. Deploy: `databricks bundle deploy -t enterprise_prod --var service_principal=<sp-dpo> --var admin_service_principal=<sp-dpo-admin>`.
-5. A `dpo-admins` member runs `00_setup` with `apply`; run `dpo-pipeline`; run `00_setup` `apply` again
-   (creates reporting views over the new gold tables); then un-pause both schedules.
+4. Put the workspace host in `workspace_hosts` of `enterprise_prod.json` (the profile then refuses to run in
+   any other workspace).
+5. A `dpo-admins` member opens `notebooks/00_install`, enters the two service-principal application IDs and
+   clicks **Run all**. The access gate verifies all of the above and stops with a single error listing every gap;
+   once it passes, setup, first pipeline run, reporting views and both scheduled jobs are done in one go.
 
 ## Dashboards
 

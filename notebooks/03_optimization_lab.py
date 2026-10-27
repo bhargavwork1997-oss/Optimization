@@ -56,7 +56,7 @@ results = []
 
 def experiment(name, rules, before_sql, after_sql):
     b, a = timed(before_sql), timed(after_sql)
-    results.append((name, rules, b, a, round((b - a) / b * 100, 1) if b else None, dt.datetime.utcnow()))
+    results.append((name, rules, b, a, round((b - a) / b * 100, 1) if b else None, dt.datetime.now(dt.timezone.utc)))
     print(f"{name}: before {b}s, after {a}s")
 
 # COMMAND ----------

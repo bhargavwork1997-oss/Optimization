@@ -40,7 +40,7 @@ targets:
     resources:
       jobs:
         dpo_tests: &tests_job
-          name: dpo-tests-${bundle.target}
+          name: dpo-tests-${var.profile}
           max_concurrent_runs: 1
           parameters:
             - {name: profile, default: "${var.profile}"}
@@ -86,7 +86,7 @@ targets:
         # Grants, ownership, views and drift revocation run under a separate admin identity:
         # the pipeline identity can never change who sees what.
         dpo_governance:
-          name: dpo-governance-${bundle.target}
+          name: dpo-governance-${var.profile}
           max_concurrent_runs: 1
           run_as:
             service_principal_name: ${var.admin_service_principal}

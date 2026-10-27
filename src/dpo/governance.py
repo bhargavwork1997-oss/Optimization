@@ -363,12 +363,34 @@ def audit_drift(spark, cfg: DPOConfig, run_id: str = "", revoke: bool = False) -
 
 
 # ----------------------------------------------------------------- admin path --
+def plan_table_ownership(spark, cfg: DPOConfig) -> list[Stmt]:
+    """Data-layer tables owned by the operators group, so whichever operator identity runs next
+    (a person during install, the service principal afterwards) can rewrite them. Operators still
+    cannot grant viewers anything useful: viewers have no USE SCHEMA on data layers."""
+    out = []
+    ops = _p(cfg.group("operators"))
+    for layer in DATA_LAYERS:
+        try:
+            tables = [r.tableName for r in spark.sql(f"SHOW TABLES IN {cfg.schema(layer)}").collect()
+                      if not getattr(r, "isTemporary", False)]
+        except Exception:
+            continue
+        for tb in sorted(tables):
+            if layer == "ops" and tb == "audit_log":
+                continue                                   # stays admin-owned and append-only
+            out.append(Stmt("ownership", "operators own data-layer tables",
+                            f"ALTER TABLE {cfg.t(layer, tb)} OWNER TO {ops}"))
+    return out
+
+
 def admin_plan(spark, cfg: DPOConfig) -> list[Stmt]:
     stmts = plan_setup(cfg) + plan_security(cfg)
     if cfg.governance["apply_grants"] and cfg.catalog:
         grants = plan_grants(cfg)
         views = build_views(spark, cfg)
         own = [s for s in grants if s.section == "ownership"]
+        if cfg.governance["manage_ownership"]:
+            own += plan_table_ownership(spark, cfg)
         rest = [s for s in grants if s.section != "ownership"]
         return stmts + views + own + rest            # views exist before they are re-owned
     return stmts + build_views(spark, cfg)

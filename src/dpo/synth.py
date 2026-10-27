@@ -44,6 +44,17 @@ SCENARIO_RULE = {
 SCALES = {"small": (1, 30), "medium": (5, 30), "large": (40, 60), "xl": (200, 90)}
 
 ACCOUNT, WORKSPACE = "acct-dpo-sim", "1234567890123456"
+UTC = dt.timezone.utc
+
+
+def _utc(epoch_s: int) -> dt.datetime:
+    """Timezone-aware UTC datetime. Naive datetimes are read by PySpark in the machine's local
+    zone, which made results depend on where the tests ran (IST vs UTC)."""
+    return dt.datetime.fromtimestamp(epoch_s, tz=UTC)
+
+
+def _day(y: int, m: int, d: int) -> dt.datetime:
+    return dt.datetime(y, m, d, tzinfo=UTC)
 DBU_PER_NODE_HOUR = 0.75
 SKU = {
     "jobs": "PREMIUM_JOBS_COMPUTE",
@@ -364,8 +375,8 @@ def _node_timeline(runs: DataFrame, ap_hours: DataFrame) -> DataFrame:
 
 
 def _prices(spark: SparkSession, t0: int) -> DataFrame:
-    change = dt.datetime.utcfromtimestamp(t0 + 10 * 86400)
-    old = dt.datetime(2020, 1, 1)
+    change = _utc(t0 + 10 * 86400)
+    old = _day(2020, 1, 1)
     rows = [
         (SKU["jobs"], old, change, 0.13),            # price change inside the window: SCD join test
         (SKU["jobs"], change, None, 0.15),
@@ -390,8 +401,12 @@ def generate(spark: SparkSession, cfg: DPOConfig, scale: str = "small", seed: in
     if scale not in SCALES:
         raise ValueError(f"scale must be one of {list(SCALES)}")
     mult, n_days = SCALES[scale]
+    try:
+        spark.conf.set("spark.sql.session.timeZone", "UTC")   # to_date() must not depend on locale
+    except Exception:
+        pass
     end = dt.date.fromisoformat(end_date or cfg.end_date or dt.date.today().isoformat())
-    t0 = int(dt.datetime(end.year, end.month, end.day).replace(tzinfo=dt.timezone.utc).timestamp()) \
+    t0 = int(_day(end.year, end.month, end.day).timestamp()) \
         - n_days * 86400
     t0 += (seed % 7) * 60          # seed nudges timestamps so different seeds differ
 
@@ -415,7 +430,7 @@ def generate(spark: SparkSession, cfg: DPOConfig, scale: str = "small", seed: in
                 .withColumn("hs", (F.lit(t0) + F.col("d") * 86400 + 7 * 3600 + F.col("h") * 3600)
                             .cast("long")))
 
-    t_change = F.lit(dt.datetime.utcfromtimestamp(t0 - 86400))
+    t_change = F.lit(_utc(t0 - 86400))
     jobs_tbl = jobs.select(
         F.lit(ACCOUNT).alias("account_id"), F.lit(WORKSPACE).alias("workspace_id"), "job_id",
         F.col("job_name").alias("name"), F.lit(None).cast("string").alias("description"),
@@ -424,11 +439,11 @@ def generate(spark: SparkSession, cfg: DPOConfig, scale: str = "small", seed: in
         F.col("owner").alias("run_as"))
     # SCD trap: an older version of the first job with a different name must be ignored
     stale_job = jobs_tbl.limit(1).withColumn("name", F.lit("STALE_NAME")) \
-                        .withColumn("change_time", F.lit(dt.datetime(2024, 1, 1)))
+                        .withColumn("change_time", F.lit(_day(2024, 1, 1)))
     clusters_tbl = clusters.select(
         F.lit(ACCOUNT).alias("account_id"), F.lit(WORKSPACE).alias("workspace_id"), "cluster_id",
         "cluster_name", F.col("owner").alias("owned_by"),
-        F.lit(dt.datetime(2024, 6, 1)).alias("create_time"), F.lit(None).cast("timestamp").alias("delete_time"),
+        F.lit(_day(2024, 6, 1)).alias("create_time"), F.lit(None).cast("timestamp").alias("delete_time"),
         F.lit("Standard_D8ds_v5").alias("driver_node_type"), F.lit("Standard_D8ds_v5").alias("worker_node_type"),
         "worker_count", F.lit(None).cast("int").alias("min_autoscale_workers"),
         F.lit(None).cast("int").alias("max_autoscale_workers"), "auto_termination_minutes",
@@ -439,7 +454,7 @@ def generate(spark: SparkSession, cfg: DPOConfig, scale: str = "small", seed: in
     stale_cluster = (clusters_tbl.filter((F.col("cluster_source") == "UI") &
                                          F.col("cluster_name").startswith("control")).limit(1)
                      .withColumn("auto_termination_minutes", F.lit(0))
-                     .withColumn("change_time", F.lit(dt.datetime(2024, 6, 1))))
+                     .withColumn("change_time", F.lit(_day(2024, 6, 1))))
 
     out = {
         "billing_usage": _usage(runs, ap_hours, wh_hours),
@@ -454,7 +469,7 @@ def generate(spark: SparkSession, cfg: DPOConfig, scale: str = "small", seed: in
             "table_catalog", "table_schema", "table_name", "num_files", "size_bytes",
             F.array().cast("array<string>").alias("partition_columns"),
             F.array().cast("array<string>").alias("clustering_columns"),
-            F.lit(dt.datetime.utcfromtimestamp(t0 + n_days * 86400)).alias("last_modified"),
+            F.lit(_utc(t0 + n_days * 86400)).alias("last_modified"),
             F.lit("data-eng@example.com").alias("table_owner")),
     }
 

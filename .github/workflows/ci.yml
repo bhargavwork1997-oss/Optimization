@@ -27,7 +27,7 @@ jobs:
         with: {distribution: temurin, java-version: "17"}
       - uses: actions/setup-python@v5
         with: {python-version: "3.11"}
-      - run: pip install pyspark==3.5.3 pytest
+      - run: pip install -r requirements-dev.txt
       - name: Unit, regression, chaos, governance, security
         run: pytest -q -m "not slow"
       - name: Volume (medium)

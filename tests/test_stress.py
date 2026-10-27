@@ -1,4 +1,5 @@
 """Aggressive suite: corrupted input, missing sources, empty windows, scale, determinism."""
+import os
 import time
 
 import pytest
@@ -74,3 +75,27 @@ def test_medium_scale_recall_and_throughput(spark):
     print(f"medium scale: {rows} sim rows, pipeline {secs:.1f}s")
     from dpo.synth import SCENARIO_RULE
     assert spark.table(cfg.t("gold", "findings")).count() == len(SCENARIO_RULE) * 5
+
+
+def test_results_do_not_depend_on_machine_timezone(spark):
+    """Regression: naive datetimes made the golden total differ in IST (12899.55) vs UTC (12899.30)."""
+    import time as _time
+    from dpo import synth
+    from dpo.transforms import checksum
+    old = os.environ.get("TZ")
+    sums = []
+    try:
+        for i, tz in enumerate(("UTC", "Asia/Kolkata", "America/Los_Angeles")):
+            os.environ["TZ"] = tz
+            _time.tzset()
+            cfg = local_cfg(prefix=f"tz{i}_")
+            synth.generate(spark, cfg, "small", seed=42, end_date="2026-10-27")
+            sums.append(tuple(checksum(spark.table(cfg.t("sim", n)))
+                              for n in ("list_prices", "jobs", "clusters", "billing_usage", "table_inventory")))
+    finally:
+        if old is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old
+        _time.tzset()
+    assert sums[0] == sums[1] == sums[2]
