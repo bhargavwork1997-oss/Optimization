@@ -16,3 +16,4 @@ exports/
 *.pem
 *.key
 .databrickscfg
+.vscode/
