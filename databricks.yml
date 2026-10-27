@@ -1,21 +1,36 @@
 # Databricks Asset Bundle for the DPO accelerator.
 #
-# One code base, three targets. Moving from Free Edition to enterprise = deploy another target:
-#   databricks bundle deploy -t dev               # your Free Edition workspace (profile free_edition)
-#   databricks bundle deploy -t enterprise_dev    # client dev / UAT workspace
-#   databricks bundle deploy -t enterprise_prod --var service_principal=<app-id> \
-#                                               --var admin_service_principal=<app-id>
-# Each target selects a profile in config/environments/ (catalog, sources, governance).
+# The bundle is the deployment unit: code, jobs, run-as identities and permissions per environment.
+#
+#   databricks bundle validate -t <target>
+#   databricks bundle deploy   -t <target>
+#   databricks bundle run dpo_install -t <target>     # one-time (re-runnable): gate, setup, first run, views
+#
+# Targets map 1:1 to profiles in config/environments/ (catalog, sources, governance).
+# Checked with `databricks bundle validate` (CLI v1.22.1) for all three targets, and against the CLI's
+# JSON schema in CI (tests/test_bundle.py).
 bundle:
   name: dpo-accelerator
+  databricks_cli_version: ">= 0.250.0"
 
 include:
   - resources/*.yml
 
+sync:
+  exclude:                 # deploy only what runs in the workspace
+    - ".github/**"
+    - "tests/*.py"         # tests/golden/ stays: 04_regression_tests reads it
+    - "docs/**"
+    - "requirements-dev.txt"
+    - "pytest.ini"
+
 variables:
   profile:
-    description: Profile file in config/environments/ (free_edition | enterprise_dev | enterprise_prod)
+    description: Profile in config/environments/ (free_edition | enterprise_dev | enterprise_prod)
     default: free_edition
+  catalog:
+    description: Override the profile's catalog for this target ("" = use the profile value)
+    default: ""
   admins_group:
     default: dpo-admins
   operators_group:
@@ -23,23 +38,23 @@ variables:
   analysts_group:
     default: dpo-analysts
   service_principal:
-    description: Application ID of the pipeline service principal (member of the operators group ONLY)
+    description: Application ID the pipeline runs as (member of the operators group only); "" = deployer
     default: ""
   admin_service_principal:
-    description: Application ID of the governance service principal (member of the admins group)
+    description: Application ID the install and governance jobs run as (admins group); "" = deployer
     default: ""
 
 targets:
-  # Free Edition: synthetic data only, single user, governance not enforced.
+  # ------------------------------------------------------------ Free Edition (your sandbox, no groups)
   dev:
-    mode: development
+    mode: development          # jobs prefixed "[dev <user>]", schedules paused, deployed under your home
     default: true
     workspace:
       host: https://dbc-858dc22a-1203.cloud.databricks.com
-      profile: Optimization        # Databricks CLI auth profile in ~/.databrickscfg
+      profile: Optimization    # Databricks CLI auth profile in ~/.databrickscfg
     resources:
       jobs:
-        dpo_tests: &tests_job
+        dpo_tests:
           name: dpo-tests-${var.profile}
           max_concurrent_runs: 1
           parameters:
@@ -52,55 +67,118 @@ targets:
               notebook_task:
                 notebook_path: ./notebooks/05_stress_tests.py
                 base_parameters: {volume_scale: medium}
+          tags: {app: dpo-accelerator, dpo_profile: "${var.profile}"}
 
+  # ------------------------------------------------------------ enterprise dev / UAT
   enterprise_dev:
     mode: development
-    workspace:
-      host: https://adb-<dev-workspace-id>.<n>.azuredatabricks.net
+    # No host here: it comes from DATABRICKS_HOST (CI secret) or `--profile <cli-profile>`, so client
+    # workspace URLs never sit in the repo. config/environments/*.json `workspace_hosts` still pins the
+    # profile to that workspace at run time.
     variables:
       profile: enterprise_dev
-    permissions:
-      - {level: CAN_MANAGE, group_name: "${var.admins_group}"}
-      - {level: CAN_RUN, group_name: "${var.operators_group}"}
-      - {level: CAN_VIEW, group_name: "${var.analysts_group}"}
+    # Permissions are per job (see enterprise_prod for why).
     resources:
       jobs:
-        dpo_tests: *tests_job
+        dpo_pipeline:
+          permissions:
+            - {level: CAN_MANAGE, group_name: "${var.admins_group}"}
+            - {level: CAN_MANAGE_RUN, group_name: "${var.operators_group}"}
+            - {level: CAN_VIEW, group_name: "${var.analysts_group}"}
+        dpo_install:
+          permissions:
+            - {level: CAN_MANAGE, group_name: "${var.admins_group}"}
+        dpo_tests:
+          name: dpo-tests-${var.profile}
+          max_concurrent_runs: 1
+          parameters:
+            - {name: profile, default: "${var.profile}"}
+          tasks:
+            - task_key: regression
+              notebook_task: {notebook_path: ./notebooks/04_regression_tests.py}
+            - task_key: stress
+              depends_on: [{task_key: regression}]
+              notebook_task:
+                notebook_path: ./notebooks/05_stress_tests.py
+                base_parameters: {volume_scale: medium}
+          tags: {app: dpo-accelerator, dpo_profile: "${var.profile}"}
+          permissions:
+            - {level: CAN_MANAGE, group_name: "${var.admins_group}"}
+            - {level: CAN_MANAGE_RUN, group_name: "${var.operators_group}"}
+        dpo_governance:
+          name: dpo-governance-${var.profile}
+          max_concurrent_runs: 1
+          schedule:
+            quartz_cron_expression: "0 0 8 * * ?"
+            timezone_id: Asia/Kolkata
+            pause_status: PAUSED          # development mode keeps schedules paused anyway
+          parameters:
+            - {name: profile, default: "${var.profile}"}
+            - {name: catalog, default: "${var.catalog}"}
+          tasks:
+            - task_key: apply_governance
+              notebook_task:
+                notebook_path: ./notebooks/00_setup.py
+                base_parameters: {apply_governance: apply}
+          tags: {app: dpo-accelerator, dpo_profile: "${var.profile}"}
+          permissions:
+            - {level: CAN_MANAGE, group_name: "${var.admins_group}"}
 
+  # ------------------------------------------------------------ enterprise production
   enterprise_prod:
     mode: production
     workspace:
-      host: https://adb-<prod-workspace-id>.<n>.azuredatabricks.net
-      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+      # host: from DATABRICKS_HOST (CI secret) or `--profile` (see enterprise_dev)
+      # Deployer's own folder (the deploy service principal in CI). Never /Workspace/Shared: it is
+      # writable by every user, so anyone could change code that runs as the pipeline identity.
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
     variables:
       profile: enterprise_prod
+      # Resolved by display name at deploy time; rename to your SPs. Deploy fails if they do not exist.
+      service_principal:
+        lookup:
+          service_principal: sp-dpo
+      admin_service_principal:
+        lookup:
+          service_principal: sp-dpo-admin
     run_as:
       service_principal_name: ${var.service_principal}
-    # Who can see, run or change the deployed code and jobs (also applied to the bundle folder).
-    permissions:
-      - {level: CAN_MANAGE, group_name: "${var.admins_group}"}
-      - {level: CAN_RUN, group_name: "${var.operators_group}"}
-      - {level: CAN_VIEW, group_name: "${var.analysts_group}"}
+    # Permissions are per job, not bundle-wide: jobs that run as the admin identity are admins-only.
+    # With bundle-wide CAN_RUN an operator could "run now" with changed parameters (e.g. another
+    # catalog) and borrow the admin service principal's rights.
     resources:
       jobs:
-        # Grants, ownership, views and drift revocation run under a separate admin identity:
-        # the pipeline identity can never change who sees what.
+        dpo_pipeline:
+          schedule:
+            quartz_cron_expression: "0 30 6 * * ?"
+            timezone_id: Asia/Kolkata
+            pause_status: UNPAUSED    # runs daily; dpo_install must have succeeded once
+          permissions:
+            - {level: CAN_MANAGE, group_name: "${var.admins_group}"}
+            - {level: CAN_MANAGE_RUN, group_name: "${var.operators_group}"}
+            - {level: CAN_VIEW, group_name: "${var.analysts_group}"}
+        dpo_install:
+          run_as:
+            service_principal_name: ${var.admin_service_principal}
+          permissions:
+            - {level: CAN_MANAGE, group_name: "${var.admins_group}"}
         dpo_governance:
           name: dpo-governance-${var.profile}
           max_concurrent_runs: 1
           run_as:
             service_principal_name: ${var.admin_service_principal}
           schedule:
-            quartz_cron_expression: "0 0 8 * * ?"     # daily, after the pipeline
+            quartz_cron_expression: "0 0 8 * * ?"
             timezone_id: Asia/Kolkata
-            pause_status: PAUSED
+            pause_status: UNPAUSED
           parameters:
             - {name: profile, default: "${var.profile}"}
+            - {name: catalog, default: "${var.catalog}"}
           tasks:
             - task_key: apply_governance
               notebook_task:
                 notebook_path: ./notebooks/00_setup.py
                 base_parameters: {apply_governance: apply}
+          tags: {app: dpo-accelerator, dpo_profile: "${var.profile}"}
           permissions:
             - {level: CAN_MANAGE, group_name: "${var.admins_group}"}
-          tags: {app: dpo-accelerator, cost_center: platform-finops}

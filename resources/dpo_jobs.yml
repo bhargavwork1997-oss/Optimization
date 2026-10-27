@@ -1,5 +1,5 @@
-# Daily DPO pipeline on serverless compute (no cluster spec = serverless).
-# Same job key as the v1 bundle, so `bundle deploy` updates the existing job in place.
+# Jobs present in every target. Serverless compute (no cluster spec).
+# dpo_pipeline keeps the v1 job key, so `bundle deploy` updates the existing job in place.
 resources:
   jobs:
     dpo_pipeline:
@@ -7,11 +7,12 @@ resources:
       description: Databricks Processing Optimization - ingest, attribute cost, diagnose, score, narrate
       max_concurrent_runs: 1
       schedule:
-        quartz_cron_expression: "0 30 6 * * ?"     # 06:30 daily
+        quartz_cron_expression: "0 30 6 * * ?"     # 06:30 IST daily
         timezone_id: Asia/Kolkata
-        pause_status: PAUSED                       # un-pause after the first manual run succeeds
+        pause_status: PAUSED          # enterprise_prod overrides to UNPAUSED
       parameters:
         - {name: profile, default: "${var.profile}"}
+        - {name: catalog, default: "${var.catalog}"}
       tasks:
         - task_key: generate_synthetic              # exits immediately on system-table profiles
           notebook_task: {notebook_path: ../notebooks/01_generate_synthetic_data.py}
@@ -19,12 +20,29 @@ resources:
           depends_on: [{task_key: generate_synthetic}]
           notebook_task: {notebook_path: ../notebooks/02_run_pipeline.py}
       # email_notifications: {on_failure: ["dpo-admins@corp.com"]}   # set before go-live
-      tags:
-        cost_center: platform-finops
-        app: dpo-accelerator
+      tags: {app: dpo-accelerator, dpo_profile: "${var.profile}", cost_center: platform-finops}
 
-# Classic-compute fallback (only if serverless jobs are disabled in a client workspace).
-# Add under that target in databricks.yml:
+    # One-time (and safe to re-run) installer: access gate -> setup -> first pipeline run -> views -> verify.
+    # Scheduling is left to the bundle (schedule=none), so the installer never creates jobs of its own.
+    dpo_install:
+      name: dpo-install-${var.profile}
+      max_concurrent_runs: 1
+      parameters:
+        - {name: profile, default: "${var.profile}"}
+        - {name: catalog, default: "${var.catalog}"}
+      tasks:
+        - task_key: install
+          notebook_task:
+            notebook_path: ../notebooks/00_install.py
+            base_parameters:
+              schedule: none
+              include_lab: "yes"
+              pipeline_run_as: ${var.service_principal}
+              governance_run_as: ${var.admin_service_principal}
+      tags: {app: dpo-accelerator, dpo_profile: "${var.profile}"}
+
+# Classic-compute fallback (only if serverless jobs are disabled in a client workspace). Add under
+# that target in databricks.yml:
 #   resources:
 #     jobs:
 #       dpo_pipeline:

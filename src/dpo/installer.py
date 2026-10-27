@@ -407,8 +407,27 @@ def _to_sdk(cfg: DPOConfig, spec: dict):
     return J, settings, acl
 
 
+def bundle_managed_jobs(sdk, profile: str) -> list[dict]:
+    """DPO jobs deployed by an asset bundle for this profile (dev-mode names carry a "[dev user]" prefix,
+    so match on tags and deployment kind, not on name)."""
+    found = []
+    for j in sdk.jobs.list():
+        s = getattr(j, "settings", None)
+        tags = (getattr(s, "tags", None) or {}) if s else {}
+        dep = getattr(s, "deployment", None) if s else None
+        if tags.get("app") == "dpo-accelerator" and tags.get("dpo_profile") == profile and \
+                dep is not None and str(getattr(dep, "kind", "")).endswith("BUNDLE"):
+            found.append({"job": s.name, "action": "managed by asset bundle", "id": j.job_id})
+    return found
+
+
 def schedule_jobs(cfg: DPOConfig, sdk, notebook_dir: str, run_as: str = "", admin_run_as: str = "",
                   active: bool = True) -> list[dict]:
+    """Create/update scheduled jobs for workspaces installed without the bundle. If the bundle already
+    deployed DPO jobs for this profile, change nothing: the bundle is the source of truth."""
+    managed = bundle_managed_jobs(sdk, cfg.profile)
+    if managed:
+        return managed
     out = []
     for spec in job_specs(cfg, notebook_dir, run_as, admin_run_as, active):
         J, settings, acl = _to_sdk(cfg, spec)

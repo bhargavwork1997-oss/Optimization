@@ -33,28 +33,41 @@ ops        run log, DQ, rule status, append-only audit log, governance log
 
 See `GOVERNANCE.md` and the threat model (build guide, section 12).
 
-## Install — one notebook, Run all
+## Deploy — Databricks Asset Bundles (recommended)
 
-1. **Workspace → Create → Git folder** → this repo.
-2. Open `notebooks/00_install` → **Run all**. The profile is detected from the workspace address
-   (`workspace_hosts` in each profile), so nothing else needs choosing on Free Edition.
-3. Enterprise only: before step 2, put the workspace host, catalog, `workspace_ids`, prices and group names in
-   `config/environments/enterprise_prod.json`, and fill the two widgets `pipeline_run_as` / `governance_run_as`
-   with the service-principal application IDs.
+The bundle (`databricks.yml` + `resources/`) is the deployment unit: code, jobs, run-as identities and
+permissions per environment. Validated with `databricks bundle validate` for all three targets and against the
+CLI's schema in CI.
 
-`00_install` first runs an **access gate** that changes nothing. If anything is wrong (you are not a DPO admin,
-groups missing, system tables unreadable for you or for the operators group, a service principal in the wrong
-group, the profile bound to another workspace, real data with governance off) it stops with **one error listing
-every problem and its fix**. When the gate passes it runs, in dependency order and in parallel where possible:
-governance base → synthetic data (synthetic profiles) → pipeline → secured reporting views → verification →
-scheduled jobs, with the optimisation lab and regression tests running alongside the pipeline. Safe to re-run;
-`mode = check_only` runs the gate alone.
+| Target | Mode | Runs as | Jobs |
+|---|---|---|---|
+| `dev` (Free Edition) | development | you | `dpo_pipeline`, `dpo_install`, `dpo_tests` |
+| `enterprise_dev` | development | deployer | + `dpo_governance`; per-job group permissions |
+| `enterprise_prod` | production | `sp-dpo` (pipeline), `sp-dpo-admin` (install, governance) | install/governance admins-only |
 
-Day to day you only open `02_run_pipeline` (manual run), `06_governance_audit` (monthly) and the dashboard.
-`00_setup` re-applies governance and is what the daily governance job runs.
+```bash
+databricks bundle validate -t enterprise_prod --profile <client-cli-profile>
+databricks bundle deploy   -t enterprise_prod --profile <client-cli-profile>
+databricks bundle run dpo_install -t enterprise_prod --profile <client-cli-profile>   # first time
+```
 
-CLI alternative (CI/CD): `databricks bundle deploy -t <dev|enterprise_dev|enterprise_prod>`; job names match
-the installer's, and the installer leaves bundle-managed jobs alone.
+`dpo_install` runs the access gate (one error listing every problem, nothing changed), then setup → first
+pipeline run → secured views → verify, with the lab and tests alongside. It never creates jobs itself: the
+bundle owns them. CI: `.github/workflows/deploy.yml` (manual, per environment, OAuth service principal).
+
+Before the first enterprise deploy: platform admins create the groups and the two service principals
+(`GOVERNANCE.md`); edit `config/environments/enterprise_prod.json`; rename the SP lookups in `databricks.yml`
+if yours differ. Workspace URLs are not stored in `databricks.yml`; they come from the CLI profile or CI secrets.
+
+## Install without the CLI (Git folder)
+
+**Workspace → Create → Git folder** → open `notebooks/00_install` → **Run all**. The profile is detected from
+the workspace address (`workspace_hosts`); on enterprise fill `pipeline_run_as` / `governance_run_as`. Same
+access gate and steps as `dpo_install`; it also creates the scheduled jobs, unless bundle-deployed DPO jobs for
+this profile already exist (detected by tag), in which case it changes nothing. `mode = check_only` runs the
+gate alone.
+
+Day to day: `02_run_pipeline` (manual run), `06_governance_audit` (monthly), the dashboard.
 
 ## Local tests (no Databricks)
 
@@ -74,8 +87,8 @@ notebooks/    00_install · 00_setup · 01_generate_synthetic_data · 02_run_pip
 dashboards/   dashboard_datasets.sql
 docs/         data-contract.md · dashboard-guide.md · ado-backlog.md
 resources/    dpo_jobs.yml          databricks.yml (targets dev / enterprise_dev / enterprise_prod)
-tests/        pytest suites + golden/small_seed42.json
-GOVERNANCE.md · .github/ (CI, CODEOWNERS)
+tests/        pytest suites (incl. test_bundle.py) + golden/small_seed42.json
+GOVERNANCE.md · .github/ (CI with bundle-schema check, deploy workflow, CODEOWNERS)
 ```
 
 ## Migrating from v1 (`workspace.dpo`)
