@@ -1,0 +1,38 @@
+{
+  "findings_by_rule": {
+    "R01_COMPUTE_IDLE": 1,
+    "R02_COMPUTE_OVERSIZED": 1,
+    "R03_COMPUTE_AUTOTERMINATION": 1,
+    "R04_COMPUTE_OLD_RUNTIME": 1,
+    "R05_JOB_ON_ALL_PURPOSE": 1,
+    "R06_JOB_FAILURE_RATE": 1,
+    "R07_TASK_SKEW": 1,
+    "R08_RUNTIME_REGRESSION": 1,
+    "R09_COST_SPIKE": 1,
+    "R10_UNTAGGED_SPEND": 1,
+    "R11_SQL_NO_PRUNING": 1,
+    "R12_SQL_SPILL": 1,
+    "R13_SQL_REPEATED_NO_CACHE": 1,
+    "R14_WAREHOUSE_QUEUING": 1,
+    "R15_TABLE_SMALL_FILES": 1,
+    "R16_SQL_ANTI_PATTERN": 1,
+    "R17_REPLATFORM_CANDIDATE": 1
+  },
+  "total_cost": 12899.3,
+  "top10_finding_ids": [
+    "b7635417b036f356",
+    "5c45d65922557990",
+    "1bc815e3b0ccd140",
+    "2e569f955f393dc1",
+    "a7bf904ab61ef43b",
+    "865f3e2d96fb8c52",
+    "000bf5238f4f8710",
+    "8413ac7ee8ef929d",
+    "a9b13919c03b455a",
+    "eecf144c6c2f68b4"
+  ],
+  "findings_checksum": [
+    17,
+    -5021778345925100083
+  ]
+}

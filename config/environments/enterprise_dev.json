@@ -1,0 +1,31 @@
+{
+  "description": "Enterprise development / UAT. Real system tables, dedicated catalog, governance enforced, drift reported but not revoked.",
+  "catalog": "dpo_dev",
+  "schema_prefix": "",
+  "managed_location": null,
+  "source_mode": "system",
+  "lookback_days": 30,
+  "price_multiplier": 1.0,
+  "workspace_ids": [],
+  "inventory_catalogs": [],
+  "governance": {
+    "enforce": true,
+    "apply_grants": true,
+    "manage_ownership": true,
+    "grant_system_access": false,
+    "revoke_drift": false,
+    "fail_on_error": false,
+    "groups": {
+      "admins": "dpo-admins",
+      "operators": "dpo-operators",
+      "analysts": "dpo-analysts",
+      "viewers": "dpo-viewers"
+    },
+    "cost_center_groups": {},
+    "retain_raw_sql": false,
+    "ai_allow_external": false,
+    "operators_can_create_schemas": true
+  },
+  "ai_enabled": false,
+  "contract_prices": {}
+}

@@ -1,28 +1,27 @@
-# Data contract — `workspace.dpo.raw_usage_logs`
+# Data contract — bronze sources
 
-Every ingest source (synthetic or real) must produce exactly these columns. Notebooks 02–04 depend only on this contract.
+Every source, real or synthetic, is projected to the same column contract (`SPECS` in `src/dpo/pipeline.py`).
+Synthetic twins in `<prefix>sim` use the same names as the system tables, so silver and gold run unchanged.
+A column missing from a source becomes a typed NULL and is listed in `ops.source_status.missing_columns`.
 
-| Column | Type | Meaning | Synthetic (01) | System tables (01b) |
-|---|---|---|---|---|
-| usage_date | DATE | Day of usage | generated | `system.billing.usage.usage_date` |
-| job_name | STRING | Job / pipeline / cluster name | fixed list | `system.lakeflow.jobs.name`, else cluster name |
-| cluster_id | STRING | Compute identifier | hash of name | `usage_metadata.cluster_id` |
-| workload_type | STRING | ETL_JOB, INTERACTIVE, SQL, DLT, INGEST | fixed | mapped from `billing_origin_product` |
-| sku | STRING | Normalized SKU family (joins `ref_sku_price`) | fixed | mapped from `sku_name` |
-| node_type | STRING | Worker VM type | random | `system.compute.clusters.worker_node_type` |
-| num_workers | INT | Worker count | random | `system.compute.clusters.worker_count` |
-| runtime_hours | DOUBLE | Hours run that day | random | **APPROX** — NULL; derive from `system.lakeflow.job_run_timeline` |
-| dbus | DOUBLE | DBUs consumed | profile-based | `SUM(usage_quantity)` |
-| avg_cpu_util | DOUBLE | 0–1 average CPU | profile-based | `system.compute.node_timeline` |
-| idle_minutes | INT | Minutes near-idle | profile-based | **APPROX** — minutes with CPU < 5% |
-| spill_gb | DOUBLE | Disk spill | profile-based | **APPROX** — 0; SQL warehouses via `system.query.history` |
-| failed_retries | INT | Failed attempts | profile-based | **APPROX** — 0; count failed runs in `job_run_timeline` |
-| query_text | STRING | Representative SQL | fixed | **APPROX** — NULL; SQL warehouses via `system.query.history.statement_text` |
+| Bronze table | System table | Key columns | Notes |
+|---|---|---|---|
+| `billing_usage` | `system.billing.usage` | record_id, workspace_id, sku_name, usage_date, usage_start/end_time, usage_quantity, custom_tags, usage_metadata.{job_id, job_run_id, cluster_id, warehouse_id, notebook_id, dlt_pipeline_id}, identity_metadata.run_as | spine of attribution; filtered to `workspace_ids` |
+| `list_prices` | `system.billing.list_prices` | sku_name, price_start/end_time, pricing.effective_list.default | SCD join on usage_end_time; overridden by `contract_prices` |
+| `jobs` | `system.lakeflow.jobs` | job_id, name, creator_id, tags, change_time | latest version per job |
+| `job_run_timeline` | `system.lakeflow.job_run_timeline` | run_id, period_start/end_time, result_state, compute_ids | hourly slices collapsed to runs |
+| `job_task_run_timeline` | `system.lakeflow.job_task_run_timeline` | run_id, job_run_id, task_key, period_* | task skew |
+| `query_history` | `system.query.history` | statement_id, statement_text, durations, read_bytes/files, pruned_files, spilled_local_bytes, from_result_cache, compute.warehouse_id | `statement_text` stored only as normalised shape (comments and literals removed) unless `retain_raw_sql` |
+| `clusters` | `system.compute.clusters` | cluster_id, cluster_source, worker_count, auto_termination_minutes, dbr_version, tags, change_time | latest version per cluster |
+| `node_timeline` | `system.compute.node_timeline` | cluster_id, start/end_time, cpu_user/system_percent, mem_used_percent | utilisation; empty on serverless-only workspaces |
+| `table_inventory` | `information_schema.tables` + `DESCRIBE DETAIL` | num_files, size_bytes, clustering_columns | only catalogs in `inventory_catalogs` |
 
-## Client-onboarding checklist for 01b
-- [ ] System schemas enabled by a metastore admin (`billing`, `compute`, `lakeflow`, `query`)
-- [ ] Service principal has `SELECT` on those schemas
-- [ ] `SELECT * FROM system.billing.usage LIMIT 10` returns rows
-- [ ] `billing_origin_product` and `sku_name` values reviewed against the CASE mappings in 01b
-- [ ] APPROX columns filled where the client needs them (runtime, retries, spill, SQL text)
-- [ ] `ref_sku_price` updated with contracted rates
+## Client onboarding checklist
+
+- [ ] System schemas enabled (`billing`, `lakeflow`, `query`, `compute`, `access`)
+- [ ] `dpo-operators` has SELECT on them; `00_setup` preflight shows OK for each
+- [ ] `workspace_ids` set to the workspaces in scope (preflight warns if empty)
+- [ ] `contract_prices` / `price_multiplier` reflect the client contract
+- [ ] `inventory_catalogs` agreed (table-layout scan reads metadata only)
+- [ ] `retain_raw_sql` stays `false` unless the client approved storing raw SQL
+- [ ] First run: review `ops.source_status` and `ops.dq_report` with the client before any finding

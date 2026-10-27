@@ -1,70 +1,96 @@
 # DPO Accelerator — Databricks Processing Optimization
 
-Analyzes Databricks usage logs to show **what generates cost**, **why** (waste category), **what to do about it**
-(optimization lever), and **how much it saves** — with AI-written recommendations and a lab that proves the savings.
+Analyses Databricks system telemetry to show **what generates cost**, **why** (17 evidence-based rules),
+**what to do about it** (prioritised backlog, score `S = 0.35V + 0.25C + 0.20F + 0.20R`) and **whether a
+fix type works** (optimisation lab). Runs on serverless, so it works on Free Edition and enterprise accounts.
 
-Levers covered: SQL optimization · data model changes · partitioning / liquid clustering ·
-right-sizing & auto-termination · job vs all-purpose compute · replatforming simple pipelines to native Azure compute.
+Levers covered: SQL optimisation and anti-patterns · data layout (pruning, small files, clustering) ·
+right-sizing and auto-termination · job vs all-purpose compute · reliability and skew · cost spikes and
+regressions · tagging · replatforming plain file copies to native Azure compute.
 
 ## Architecture
 
 ```
-Bronze  raw_usage_logs       01_generate_logs (POC, synthetic)  |  01b_system_tables_source (client, real)
-        ref_sku_price        00_setup
-Silver  usage_cost           02_silver_cost        USD cost per job / cluster / day
-Gold    cost_categorized     03_gold_categorize    waste_category + optimization_lever + est. savings
-        ai_recommendations   04_ai_recommend       LLM fix per top spender (rule-based fallback)
-Lab     lab_results          05_optimization_lab   before/after proof on samples.tpch
-UI      AI/BI dashboard      dashboards/dashboard_datasets.sql
-Orchestration                resources/dpo_pipeline.job.yml (00 → 01 → 02 → 03 → 04, daily, serverless)
+system.* tables  or  synthetic twins (dpo_sim)        <- profile.source_mode
+        │
+bronze   column contracts, workspace scope, raw SQL minimised
+silver   DQ + quarantine, de-dup, SCD latest, contract/list pricing, SQL fingerprints
+gold     cost attribution (direct / allocated / idle), scorecards, 17 rules, scored backlog, narratives
+reporting  secured views: row-level by cost centre, salted identity hashing   (admin-owned)
+security   access map + identity salt                                          (admins only)
+ops        run log, DQ, rule status, append-only audit log, governance log
 ```
 
-All tables live in `workspace.dpo`.
+## Environments: one code base, three profiles
 
-## Quick start — Databricks Free Edition
+| Profile (`config/environments/`) | Bundle target | Catalog | Sources | Governance |
+|---|---|---|---|---|
+| `free_edition` | `dev` | `workspace` (`dpo_*` schemas) | synthetic | not enforced |
+| `enterprise_dev` | `enterprise_dev` | `dpo_dev` | system tables | enforced, drift reported |
+| `enterprise_prod` | `enterprise_prod` | `dpo` | system tables | enforced, drift revoked, two service principals |
 
-> Community Edition was retired on 1 Jan 2026; Free Edition replaces it. Free Edition is **serverless-only and
-> non-commercial** — use it for the POC/demo with synthetic data only. Never load client logs into it.
+> Free Edition is non-commercial and has no access control: **never load client telemetry into it.**
 
-1. Sign up at https://login.databricks.com (Free Edition).
-2. **Settings → Linked accounts → Git integration** → GitHub + personal access token.
-3. **Workspace → Create → Git folder** → paste this repo's URL.
-4. Run notebooks in order on serverless compute: `00` → `01` → `02` → `03` → `04` → `05`.
-5. Build the dashboard: follow [docs/dashboard-guide.md](docs/dashboard-guide.md).
-6. Create the daily job — either:
-   - **UI:** Jobs & Pipelines → Create job → add tasks 00, 01, 02, 03, 04 with dependencies, or
-   - **CLI:** set `host` in `databricks.yml`, then
-     ```bash
-     databricks auth login --host <workspace-url>
-     databricks bundle validate
-     databricks bundle deploy -t dev
-     databricks bundle run dpo_pipeline -t dev
-     ```
+Going live at a client: edit `enterprise_prod.json` (catalog, storage, `workspace_ids`, contract prices,
+group names), deploy the `enterprise_prod` target, have an admin run `00_setup` with `apply`. No code changes.
+See `GOVERNANCE.md` and the threat model (build guide, section 12).
 
-## Running on a client workspace
+## Quick start — Free Edition
 
-| Change | Where |
-|---|---|
-| Use real system tables instead of synthetic data | `databricks bundle deploy -t client` (switches ingest to `01b`) |
-| Contracted DBU rates | `00_setup.sql` → `ref_sku_price` |
-| Catalog name | replace `workspace.dpo` in notebooks and dashboard SQL |
-| More jobs analyzed by AI | `top_n` parameter in the job / notebook 04 |
-| Thresholds (idle, CPU, spill, retries) | `rules` CTE in `03_gold_categorize.sql` |
+1. **Workspace → Create → Git folder** → this repo.
+2. `notebooks/00_setup` → profile `free_edition` → `apply` → Run all.
+3. `notebooks/01_generate_synthetic_data` → `scale=small` → Run all.
+4. `notebooks/02_run_pipeline` → Run all. The last cell is the backlog.
+5. `notebooks/04_regression_tests` → every check `passed = true`.
+6. Optional: `03_optimization_lab` (before/after proof), dashboard from `dashboards/dashboard_datasets.sql`.
 
-Validate `01b` against the client workspace first — see [docs/data-contract.md](docs/data-contract.md).
+CLI: `databricks bundle deploy -t dev && databricks bundle run dpo_pipeline -t dev`
+(the `dev` target uses your `Optimization` CLI profile).
+
+## Local tests (no Databricks)
+
+```bash
+pip install pyspark==3.5.3 pytest     # Java 17+
+pytest -q -m "not slow"                # unit, regression (golden), chaos, governance, security
+pytest -q -m slow                      # 5x volume
+```
 
 ## Repo layout
 
 ```
-notebooks/   00_setup.sql · 01_generate_logs.py · 01b_system_tables_source.sql · 02_silver_cost.sql
-             03_gold_categorize.sql · 04_ai_recommend.py · 05_optimization_lab.py
-dashboards/  dashboard_datasets.sql
-resources/   dpo_pipeline.job.yml
-docs/        dashboard-guide.md · data-contract.md · ado-backlog.md
-databricks.yml
+config/       rules.json (17 rules) · environments/*.json (profiles)
+src/dpo/      config · governance · transforms · synth · pipeline · rules · recommend · validation
+notebooks/    00_setup · 01_generate_synthetic_data · 02_run_pipeline · 03_optimization_lab
+              04_regression_tests · 05_stress_tests · 06_governance_audit · _common
+dashboards/   dashboard_datasets.sql
+docs/         data-contract.md · dashboard-guide.md · ado-backlog.md
+resources/    dpo_jobs.yml          databricks.yml (targets dev / enterprise_dev / enterprise_prod)
+tests/        pytest suites + golden/small_seed42.json
+GOVERNANCE.md · .github/ (CI, CODEOWNERS)
 ```
+
+## Migrating from v1 (`workspace.dpo`)
+
+v1 tables (`raw_usage_logs`, `usage_cost`, `cost_categorized`, `ai_recommendations`, `ref_sku_price`,
+`lab_results`) are not used any more. After the first successful v2 run, an owner can remove them:
+
+```sql
+-- review first: SHOW TABLES IN workspace.dpo;
+DROP SCHEMA IF EXISTS workspace.dpo CASCADE;
+```
+
+| v1 | v2 |
+|---|---|
+| `ref_sku_price` | `system.billing.list_prices` + profile `contract_prices` / `price_multiplier` |
+| `01_generate_logs` / `01b_system_tables_source` | `01_generate_synthetic_data` / `source_mode = system` |
+| `02_silver_cost`, `03_gold_categorize` | `02_run_pipeline` (bronze → silver → gold → 17 rules) |
+| waste categories / levers | rules R01–R17 (R16 SQL anti-patterns, R17 replatform candidates) |
+| `04_ai_recommend` | `narrate` stage: same four-line prompt, template fallback, hardened |
+| `05_optimization_lab` | `03_optimization_lab` → `gold.lab_results` |
 
 ## Work tracking
 
-Backlog lives in Azure DevOps (DEM Task Management System) — see [docs/ado-backlog.md](docs/ado-backlog.md).
-Link commits to work items with `AB#<id>` in the commit message.
+Backlog in Azure DevOps (DEM Task Management System) — see `docs/ado-backlog.md`.
+Branch `feature/AB<id>-short-name`; reference work items as `AB#<id>` in commits.
+
+Estimated savings are hypotheses until a benchmark validates them.

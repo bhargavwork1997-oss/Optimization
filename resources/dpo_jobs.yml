@@ -1,0 +1,41 @@
+# Daily DPO pipeline on serverless compute (no cluster spec = serverless).
+# Same job key as the v1 bundle, so `bundle deploy` updates the existing job in place.
+resources:
+  jobs:
+    dpo_pipeline:
+      name: dpo-pipeline-${bundle.target}
+      description: Databricks Processing Optimization - ingest, attribute cost, diagnose, score, narrate
+      max_concurrent_runs: 1
+      schedule:
+        quartz_cron_expression: "0 30 6 * * ?"     # 06:30 daily
+        timezone_id: Asia/Kolkata
+        pause_status: PAUSED                       # un-pause after the first manual run succeeds
+      parameters:
+        - {name: profile, default: "${var.profile}"}
+      tasks:
+        - task_key: generate_synthetic              # exits immediately on system-table profiles
+          notebook_task: {notebook_path: ../notebooks/01_generate_synthetic_data.py}
+        - task_key: run_pipeline
+          depends_on: [{task_key: generate_synthetic}]
+          notebook_task: {notebook_path: ../notebooks/02_run_pipeline.py}
+      # email_notifications: {on_failure: ["dpo-admins@corp.com"]}   # set before go-live
+      tags:
+        cost_center: platform-finops
+        app: dpo-accelerator
+
+# Classic-compute fallback (only if serverless jobs are disabled in a client workspace).
+# Add under that target in databricks.yml:
+#   resources:
+#     jobs:
+#       dpo_pipeline:
+#         job_clusters:
+#           - job_cluster_key: dpo
+#             new_cluster:
+#               spark_version: 15.4.x-scala2.12
+#               node_type_id: Standard_D4ds_v5
+#               num_workers: 2
+#               data_security_mode: SINGLE_USER
+#               custom_tags: {cost_center: platform-finops}
+#         tasks:
+#           - {task_key: generate_synthetic, job_cluster_key: dpo}
+#           - {task_key: run_pipeline, job_cluster_key: dpo}
