@@ -320,7 +320,8 @@ def verify(spark, cfg: DPOConfig) -> dict:
 
 def build_plan(spark, cfg: DPOConfig, run_id: str, run_notebook: Optional[Callable] = None,
                include_lab: bool = True, include_tests: Optional[bool] = None,
-               schedule_fn: Optional[Callable] = None, regenerate_synthetic: bool = False) -> list[Step]:
+               schedule_fn: Optional[Callable] = None, regenerate_synthetic: bool = False,
+               dashboard_fn: Optional[Callable] = None) -> list[Step]:
     from . import pipeline, synth
     from .governance import _exists
     synthetic = cfg.source_mode == "synthetic"
@@ -354,6 +355,8 @@ def build_plan(spark, cfg: DPOConfig, run_id: str, run_notebook: Optional[Callab
              deps=("viewer_layer",)),
         Step("schedule_jobs", "Create or update scheduled jobs", schedule_fn or (lambda: None),
              deps=("verify",), critical=False, enabled=schedule_fn is not None),
+        Step("dashboards", "Publish dashboards (no embedded credentials, group permissions)",
+             dashboard_fn or (lambda: None), deps=("verify",), critical=False, enabled=dashboard_fn is not None),
     ]
 
 

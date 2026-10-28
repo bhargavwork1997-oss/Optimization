@@ -1,0 +1,2188 @@
+{
+  "datasets": [
+    {
+      "name": "ds_cost_daily",
+      "displayName": "Daily cost",
+      "queryLines": [
+        "SELECT usage_date, billing_origin_product AS product, coalesce(cost_center, '(untagged)') AS cost_center, workspace_id, sku_name,\n",
+        "       cost, dbus\n",
+        "FROM dpo.reporting.cost_by_dimension\n"
+      ]
+    },
+    {
+      "name": "ds_workloads",
+      "displayName": "Workloads",
+      "queryLines": [
+        "SELECT w.workload_key, w.workload_type, coalesce(cost_center, '(untagged)') AS cost_center,\n",
+        "       round(w.monthly_cost, 2) AS monthly_cost, round(w.window_cost, 2) AS window_cost,\n",
+        "       round(w.untagged_cost, 2) AS untagged_cost, w.active_days,\n",
+        "       array_join(w.attribution_types, ', ') AS attribution,\n",
+        "       -- share of what THIS reader can see (account-wide share is masked for viewers)\n",
+        "       round(w.monthly_cost / nullif(sum(w.monthly_cost) OVER (), 0) * 100, 1) AS share_of_visible_pct,\n",
+        "       coalesce(f.findings, 0) AS findings, coalesce(f.rule_ids, '') AS rule_ids\n",
+        "FROM dpo.reporting.workload_summary w\n",
+        "LEFT JOIN (SELECT workload_key, count(*) AS findings,\n",
+        "                  array_join(array_sort(collect_set(rule_id)), ', ') AS rule_ids\n",
+        "           FROM dpo.reporting.recommendations GROUP BY workload_key) f USING (workload_key)\n"
+      ]
+    },
+    {
+      "name": "ds_backlog",
+      "displayName": "Backlog",
+      "queryLines": [
+        "SELECT row_number() OVER (ORDER BY rec.score DESC, rec.finding_id) AS backlog_rank,\n",
+        "       rec.priority, round(rec.score, 3) AS score, rec.rule_id, rec.category, rec.title,\n",
+        "       rec.workload_key, rec.workload_type, coalesce(rec.cost_center, '(untagged)') AS cost_center,\n",
+        "       rec.metric_name, round(rec.metric_value, 3) AS metric_value, rec.threshold,\n",
+        "       round(coalesce(rec.est_monthly_savings, 0), 2) AS est_monthly_savings, rec.status,\n",
+        "       round(rec.V, 2) AS value_v, round(rec.C, 2) AS confidence_c,\n",
+        "       round(rec.F, 2) AS feasibility_f, round(rec.R, 2) AS reversibility_r,\n",
+        "       CASE WHEN rec.priority = 'P1' THEN 1 ELSE 0 END AS is_p1,\n",
+        "       rec.action, n.narrative, n.narrative_source, rec.period_end\n",
+        "FROM dpo.reporting.recommendations rec\n",
+        "LEFT JOIN dpo.reporting.recommendation_narratives n USING (finding_id)\n"
+      ]
+    },
+    {
+      "name": "ds_score_parts",
+      "displayName": "Score breakdown",
+      "queryLines": [
+        "SELECT concat(lpad(CAST(backlog_rank AS STRING), 2, '0'), ' · ', rule_id) AS finding,\n",
+        "       priority, category, cost_center, component, weighted\n",
+        "FROM (SELECT row_number() OVER (ORDER BY score DESC, finding_id) AS backlog_rank, priority, category,\n",
+        "             rule_id, coalesce(cost_center, '(untagged)') AS cost_center,\n",
+        "             0.35 * V AS v, 0.25 * C AS c, 0.20 * F AS f, 0.20 * R AS r\n",
+        "      FROM dpo.reporting.recommendations)\n",
+        "LATERAL VIEW stack(4, 'Value 0.35·V', v, 'Confidence 0.25·C', c,\n",
+        "                      'Feasibility 0.20·F', f, 'Reversibility 0.20·R', r) s AS component, weighted\n",
+        "WHERE backlog_rank <= 15\n"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "overview",
+      "displayName": "Overview",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layout": [
+        {
+          "widget": {
+            "name": "ov_header",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## DPO · Cost overview",
+                "Profile **enterprise_prod** · source **system tables** · lookback **30 days** · amounts in **USD**. Rows are limited to the cost centres you are allowed to see. Estimated savings are hypotheses until a benchmark validates them."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_f_date",
+            "queries": [
+              {
+                "name": "ov_f_date_ds_cost_daily",
+                "query": {
+                  "datasetName": "ds_cost_daily",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "usage_date",
+                      "expression": "`usage_date`"
+                    },
+                    {
+                      "name": "usage_date_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-date-range-picker",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "usage_date",
+                    "displayName": "Usage date (daily charts)",
+                    "queryName": "ov_f_date_ds_cost_daily"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Usage date (daily charts)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_f_cc",
+            "queries": [
+              {
+                "name": "ov_f_cc_ds_cost_daily",
+                "query": {
+                  "datasetName": "ds_cost_daily",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "cost_center",
+                      "expression": "`cost_center`"
+                    },
+                    {
+                      "name": "cost_center_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ]
+                }
+              },
+              {
+                "name": "ov_f_cc_ds_workloads",
+                "query": {
+                  "datasetName": "ds_workloads",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "cost_center",
+                      "expression": "`cost_center`"
+                    },
+                    {
+                      "name": "cost_center_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ]
+                }
+              },
+              {
+                "name": "ov_f_cc_ds_backlog",
+                "query": {
+                  "datasetName": "ds_backlog",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "cost_center",
+                      "expression": "`cost_center`"
+                    },
+                    {
+                      "name": "cost_center_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "cost_center",
+                    "displayName": "Cost center",
+                    "queryName": "ov_f_cc_ds_cost_daily"
+                  },
+                  {
+                    "fieldName": "cost_center",
+                    "displayName": "Cost center",
+                    "queryName": "ov_f_cc_ds_workloads"
+                  },
+                  {
+                    "fieldName": "cost_center",
+                    "displayName": "Cost center",
+                    "queryName": "ov_f_cc_ds_backlog"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Cost center"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_f_product",
+            "queries": [
+              {
+                "name": "ov_f_product_ds_cost_daily",
+                "query": {
+                  "datasetName": "ds_cost_daily",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "product",
+                      "expression": "`product`"
+                    },
+                    {
+                      "name": "product_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "product",
+                    "displayName": "Product",
+                    "queryName": "ov_f_product_ds_cost_daily"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Product"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_k_window",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_cost_daily",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "value",
+                      "expression": "SUM(`cost`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "frame": {
+                "showTitle": true,
+                "title": "Window cost (USD)"
+              },
+              "encodings": {
+                "value": {
+                  "fieldName": "value",
+                  "displayName": "Window cost (USD)",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_k_runrate",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_workloads",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "value",
+                      "expression": "SUM(`monthly_cost`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "frame": {
+                "showTitle": true,
+                "title": "30-day run rate (USD)"
+              },
+              "encodings": {
+                "value": {
+                  "fieldName": "value",
+                  "displayName": "30-day run rate (USD)",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 1,
+            "y": 3,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_k_savings",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_backlog",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "value",
+                      "expression": "SUM(`est_monthly_savings`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "frame": {
+                "showTitle": true,
+                "title": "Est. savings / month (USD)",
+                "showDescription": true,
+                "description": "Unvalidated estimate"
+              },
+              "encodings": {
+                "value": {
+                  "fieldName": "value",
+                  "displayName": "Est. savings / month (USD)",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 3,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_k_p1",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_backlog",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "value",
+                      "expression": "SUM(`is_p1`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "frame": {
+                "showTitle": true,
+                "title": "P1 findings"
+              },
+              "encodings": {
+                "value": {
+                  "fieldName": "value",
+                  "displayName": "P1 findings",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 3,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_k_open",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_backlog",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "value",
+                      "expression": "COUNT(`backlog_rank`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "frame": {
+                "showTitle": true,
+                "title": "Open findings"
+              },
+              "encodings": {
+                "value": {
+                  "fieldName": "value",
+                  "displayName": "Open findings",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 3,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_k_untagged",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_workloads",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "value",
+                      "expression": "SUM(`untagged_cost`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "frame": {
+                "showTitle": true,
+                "title": "Untagged spend (USD)",
+                "showDescription": true,
+                "description": "Target: under 5% of window cost (R10)"
+              },
+              "encodings": {
+                "value": {
+                  "fieldName": "value",
+                  "displayName": "Untagged spend (USD)",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 5,
+            "y": 3,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_daily_product",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_cost_daily",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "usage_date",
+                      "expression": "`usage_date`"
+                    },
+                    {
+                      "name": "y",
+                      "expression": "SUM(`cost`)"
+                    },
+                    {
+                      "name": "product",
+                      "expression": "`product`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "usage_date",
+                  "displayName": "Usage date",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "axis": {
+                    "title": "Usage date"
+                  }
+                },
+                "y": {
+                  "fieldName": "y",
+                  "displayName": "Cost (USD)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "axis": {
+                    "title": "Cost (USD)"
+                  }
+                },
+                "label": {
+                  "show": false
+                },
+                "color": {
+                  "fieldName": "product",
+                  "displayName": "product",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Daily cost by product",
+                "showDescription": true,
+                "description": "Spikes are flagged by R09 (cost spike) in the backlog"
+              },
+              "mark": {
+                "colors": [
+                  "#1F4E99",
+                  "#E0A030",
+                  "#2E8B57",
+                  "#C2551A",
+                  "#7FA7D9",
+                  "#8A3A0B",
+                  "#99C9A6",
+                  "#F2B8A0",
+                  "#919191",
+                  "#5B6B7A"
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_cost_center",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_cost_daily",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "cost_center",
+                      "expression": "`cost_center`"
+                    },
+                    {
+                      "name": "y",
+                      "expression": "SUM(`cost`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "cost_center",
+                  "displayName": "Cost center",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "axis": {
+                    "title": "Cost center"
+                  }
+                },
+                "y": {
+                  "fieldName": "y",
+                  "displayName": "Cost (USD)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "axis": {
+                    "title": "Cost (USD)"
+                  }
+                },
+                "label": {
+                  "show": false
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Cost by cost center"
+              },
+              "mark": {
+                "colors": [
+                  "#1F4E99",
+                  "#E0A030",
+                  "#2E8B57",
+                  "#C2551A",
+                  "#7FA7D9",
+                  "#8A3A0B",
+                  "#99C9A6",
+                  "#F2B8A0",
+                  "#919191",
+                  "#5B6B7A"
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 5,
+            "width": 2,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_findings_cat",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_backlog",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "category",
+                      "expression": "`category`"
+                    },
+                    {
+                      "name": "y",
+                      "expression": "COUNT(`backlog_rank`)"
+                    },
+                    {
+                      "name": "priority",
+                      "expression": "`priority`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "category",
+                  "displayName": "Category",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "axis": {
+                    "title": "Category"
+                  }
+                },
+                "y": {
+                  "fieldName": "y",
+                  "displayName": "Findings",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "axis": {
+                    "title": "Findings"
+                  }
+                },
+                "label": {
+                  "show": false
+                },
+                "color": {
+                  "fieldName": "priority",
+                  "displayName": "priority",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Findings by category"
+              },
+              "mark": {
+                "colors": [
+                  "#1F4E99",
+                  "#E0A030",
+                  "#2E8B57",
+                  "#C2551A",
+                  "#7FA7D9",
+                  "#8A3A0B",
+                  "#99C9A6",
+                  "#F2B8A0",
+                  "#919191",
+                  "#5B6B7A"
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 11,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_savings_cat",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_backlog",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "category",
+                      "expression": "`category`"
+                    },
+                    {
+                      "name": "y",
+                      "expression": "SUM(`est_monthly_savings`)"
+                    },
+                    {
+                      "name": "priority",
+                      "expression": "`priority`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "category",
+                  "displayName": "Category",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "axis": {
+                    "title": "Category"
+                  }
+                },
+                "y": {
+                  "fieldName": "y",
+                  "displayName": "Savings / month (USD)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "axis": {
+                    "title": "Savings / month (USD)"
+                  }
+                },
+                "label": {
+                  "show": false
+                },
+                "color": {
+                  "fieldName": "priority",
+                  "displayName": "priority",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Est. monthly savings by category"
+              },
+              "mark": {
+                "colors": [
+                  "#1F4E99",
+                  "#E0A030",
+                  "#2E8B57",
+                  "#C2551A",
+                  "#7FA7D9",
+                  "#8A3A0B",
+                  "#99C9A6",
+                  "#F2B8A0",
+                  "#919191",
+                  "#5B6B7A"
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 11,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_top_workloads",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_workloads",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "name": "workload_key",
+                      "expression": "`workload_key`"
+                    },
+                    {
+                      "name": "workload_type",
+                      "expression": "`workload_type`"
+                    },
+                    {
+                      "name": "cost_center",
+                      "expression": "`cost_center`"
+                    },
+                    {
+                      "name": "monthly_cost",
+                      "expression": "`monthly_cost`"
+                    },
+                    {
+                      "name": "share_of_visible_pct",
+                      "expression": "`share_of_visible_pct`"
+                    },
+                    {
+                      "name": "attribution",
+                      "expression": "`attribution`"
+                    },
+                    {
+                      "name": "active_days",
+                      "expression": "`active_days`"
+                    },
+                    {
+                      "name": "findings",
+                      "expression": "`findings`"
+                    },
+                    {
+                      "name": "rule_ids",
+                      "expression": "`rule_ids`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "frame": {
+                "showTitle": true,
+                "title": "Top workloads by cost",
+                "showDescription": true,
+                "description": "Sort by any column; download as CSV from the widget menu"
+              },
+              "encodings": {
+                "columns": [
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "workload_key",
+                    "displayName": "Workload",
+                    "title": "Workload",
+                    "order": 100000,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "workload_type",
+                    "displayName": "Type",
+                    "title": "Type",
+                    "order": 100001,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "cost_center",
+                    "displayName": "Cost center",
+                    "title": "Cost center",
+                    "order": 100002,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "monthly_cost",
+                    "displayName": "Monthly cost",
+                    "title": "Monthly cost",
+                    "order": 100003,
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "$0,0.00"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "share_of_visible_pct",
+                    "displayName": "Share of visible %",
+                    "title": "Share of visible %",
+                    "order": 100004,
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "0.0"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "attribution",
+                    "displayName": "Attribution",
+                    "title": "Attribution",
+                    "order": 100005,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "active_days",
+                    "displayName": "Active days",
+                    "title": "Active days",
+                    "order": 100006,
+                    "type": "integer",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "0,0"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "findings",
+                    "displayName": "Findings",
+                    "title": "Findings",
+                    "order": 100007,
+                    "type": "integer",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "0,0"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "rule_ids",
+                    "displayName": "Rules",
+                    "title": "Rules",
+                    "order": 100008,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  }
+                ]
+              },
+              "invisibleColumns": [],
+              "allowHTMLByDefault": false,
+              "itemsPerPage": 25,
+              "paginationSize": "default",
+              "condensed": true,
+              "withRowNumber": false
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 17,
+            "width": 6,
+            "height": 9
+          }
+        }
+      ]
+    },
+    {
+      "name": "recommendations",
+      "displayName": "Recommendations",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layout": [
+        {
+          "widget": {
+            "name": "rec_header",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Recommendations backlog",
+                "Score **S = 0.35·V + 0.25·C + 0.20·F + 0.20·R** (value, confidence, feasibility, reversibility; each 0–1). **P1** = act this sprint, **P2** = plan, **P3** = backlog.",
+                "Each row carries the evidence (metric vs threshold), why it was flagged (narrative) and the recommended action. Accepting a finding = create the work item in Azure DevOps and reference the rule id; dismissed findings are handled by disabling or tuning the rule in `config/rules.json`."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "rec_f_priority",
+            "queries": [
+              {
+                "name": "rec_f_priority_ds_backlog",
+                "query": {
+                  "datasetName": "ds_backlog",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "priority",
+                      "expression": "`priority`"
+                    },
+                    {
+                      "name": "priority_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ]
+                }
+              },
+              {
+                "name": "rec_f_priority_ds_score_parts",
+                "query": {
+                  "datasetName": "ds_score_parts",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "priority",
+                      "expression": "`priority`"
+                    },
+                    {
+                      "name": "priority_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "priority",
+                    "displayName": "Priority",
+                    "queryName": "rec_f_priority_ds_backlog"
+                  },
+                  {
+                    "fieldName": "priority",
+                    "displayName": "Priority",
+                    "queryName": "rec_f_priority_ds_score_parts"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Priority"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "rec_f_category",
+            "queries": [
+              {
+                "name": "rec_f_category_ds_backlog",
+                "query": {
+                  "datasetName": "ds_backlog",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "category",
+                      "expression": "`category`"
+                    },
+                    {
+                      "name": "category_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ]
+                }
+              },
+              {
+                "name": "rec_f_category_ds_score_parts",
+                "query": {
+                  "datasetName": "ds_score_parts",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "category",
+                      "expression": "`category`"
+                    },
+                    {
+                      "name": "category_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "category",
+                    "displayName": "Category",
+                    "queryName": "rec_f_category_ds_backlog"
+                  },
+                  {
+                    "fieldName": "category",
+                    "displayName": "Category",
+                    "queryName": "rec_f_category_ds_score_parts"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Category"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "rec_f_cc",
+            "queries": [
+              {
+                "name": "rec_f_cc_ds_backlog",
+                "query": {
+                  "datasetName": "ds_backlog",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "cost_center",
+                      "expression": "`cost_center`"
+                    },
+                    {
+                      "name": "cost_center_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ]
+                }
+              },
+              {
+                "name": "rec_f_cc_ds_score_parts",
+                "query": {
+                  "datasetName": "ds_score_parts",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "cost_center",
+                      "expression": "`cost_center`"
+                    },
+                    {
+                      "name": "cost_center_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "cost_center",
+                    "displayName": "Cost center",
+                    "queryName": "rec_f_cc_ds_backlog"
+                  },
+                  {
+                    "fieldName": "cost_center",
+                    "displayName": "Cost center",
+                    "queryName": "rec_f_cc_ds_score_parts"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Cost center"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "rec_backlog",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_backlog",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "name": "backlog_rank",
+                      "expression": "`backlog_rank`"
+                    },
+                    {
+                      "name": "priority",
+                      "expression": "`priority`"
+                    },
+                    {
+                      "name": "score",
+                      "expression": "`score`"
+                    },
+                    {
+                      "name": "rule_id",
+                      "expression": "`rule_id`"
+                    },
+                    {
+                      "name": "category",
+                      "expression": "`category`"
+                    },
+                    {
+                      "name": "title",
+                      "expression": "`title`"
+                    },
+                    {
+                      "name": "workload_key",
+                      "expression": "`workload_key`"
+                    },
+                    {
+                      "name": "cost_center",
+                      "expression": "`cost_center`"
+                    },
+                    {
+                      "name": "est_monthly_savings",
+                      "expression": "`est_monthly_savings`"
+                    },
+                    {
+                      "name": "status",
+                      "expression": "`status`"
+                    },
+                    {
+                      "name": "metric_name",
+                      "expression": "`metric_name`"
+                    },
+                    {
+                      "name": "metric_value",
+                      "expression": "`metric_value`"
+                    },
+                    {
+                      "name": "threshold",
+                      "expression": "`threshold`"
+                    },
+                    {
+                      "name": "narrative",
+                      "expression": "`narrative`"
+                    },
+                    {
+                      "name": "action",
+                      "expression": "`action`"
+                    },
+                    {
+                      "name": "narrative_source",
+                      "expression": "`narrative_source`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "frame": {
+                "showTitle": true,
+                "title": "Backlog (highest score first)",
+                "showDescription": true,
+                "description": "AI narratives are labelled; review before acting"
+              },
+              "encodings": {
+                "columns": [
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "backlog_rank",
+                    "displayName": "#",
+                    "title": "#",
+                    "order": 100000,
+                    "type": "integer",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "0,0"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "priority",
+                    "displayName": "Priority",
+                    "title": "Priority",
+                    "order": 100001,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "score",
+                    "displayName": "Score",
+                    "title": "Score",
+                    "order": 100002,
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "0.00"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "rule_id",
+                    "displayName": "Rule",
+                    "title": "Rule",
+                    "order": 100003,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "category",
+                    "displayName": "Category",
+                    "title": "Category",
+                    "order": 100004,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "title",
+                    "displayName": "Finding",
+                    "title": "Finding",
+                    "order": 100005,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "workload_key",
+                    "displayName": "Workload",
+                    "title": "Workload",
+                    "order": 100006,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "cost_center",
+                    "displayName": "Cost center",
+                    "title": "Cost center",
+                    "order": 100007,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "est_monthly_savings",
+                    "displayName": "Savings / month",
+                    "title": "Savings / month",
+                    "order": 100008,
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "$0,0.00"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "status",
+                    "displayName": "Status",
+                    "title": "Status",
+                    "order": 100009,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "metric_name",
+                    "displayName": "Metric",
+                    "title": "Metric",
+                    "order": 100010,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "metric_value",
+                    "displayName": "Observed",
+                    "title": "Observed",
+                    "order": 100011,
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "0.00"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "threshold",
+                    "displayName": "Threshold",
+                    "title": "Threshold",
+                    "order": 100012,
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "0.00"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "narrative",
+                    "displayName": "Why flagged",
+                    "title": "Why flagged",
+                    "order": 100013,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "action",
+                    "displayName": "Recommended action",
+                    "title": "Recommended action",
+                    "order": 100014,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "narrative_source",
+                    "displayName": "Narrative source",
+                    "title": "Narrative source",
+                    "order": 100015,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  }
+                ]
+              },
+              "invisibleColumns": [],
+              "allowHTMLByDefault": false,
+              "itemsPerPage": 25,
+              "paginationSize": "default",
+              "condensed": true,
+              "withRowNumber": false
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 6,
+            "height": 10
+          }
+        },
+        {
+          "widget": {
+            "name": "rec_value_feasibility",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_backlog",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "name": "feasibility_f",
+                      "expression": "`feasibility_f`"
+                    },
+                    {
+                      "name": "value_v",
+                      "expression": "`value_v`"
+                    },
+                    {
+                      "name": "priority",
+                      "expression": "`priority`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "scatter",
+              "frame": {
+                "showTitle": true,
+                "title": "Value vs feasibility",
+                "showDescription": true,
+                "description": "Top right = quick wins · top left = big bets · bottom right = easy, low value"
+              },
+              "mark": {
+                "colors": [
+                  "#1F4E99",
+                  "#E0A030",
+                  "#2E8B57",
+                  "#C2551A",
+                  "#7FA7D9",
+                  "#8A3A0B",
+                  "#99C9A6",
+                  "#F2B8A0",
+                  "#919191",
+                  "#5B6B7A"
+                ]
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "feasibility_f",
+                  "displayName": "Feasibility (F)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "axis": {
+                    "title": "Feasibility (F)"
+                  }
+                },
+                "y": {
+                  "fieldName": "value_v",
+                  "displayName": "Value (V)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "axis": {
+                    "title": "Value (V)"
+                  }
+                },
+                "color": {
+                  "fieldName": "priority",
+                  "displayName": "priority",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 13,
+            "width": 3,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "rec_score_parts",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_score_parts",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "finding",
+                      "expression": "`finding`"
+                    },
+                    {
+                      "name": "y",
+                      "expression": "SUM(`weighted`)"
+                    },
+                    {
+                      "name": "component",
+                      "expression": "`component`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "finding",
+                  "displayName": "Finding",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "axis": {
+                    "title": "Finding"
+                  }
+                },
+                "y": {
+                  "fieldName": "y",
+                  "displayName": "Weighted score",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "axis": {
+                    "title": "Weighted score"
+                  }
+                },
+                "label": {
+                  "show": false
+                },
+                "color": {
+                  "fieldName": "component",
+                  "displayName": "component",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Score breakdown, top 15"
+              },
+              "mark": {
+                "colors": [
+                  "#1F4E99",
+                  "#E0A030",
+                  "#2E8B57",
+                  "#C2551A",
+                  "#7FA7D9",
+                  "#8A3A0B",
+                  "#99C9A6",
+                  "#F2B8A0",
+                  "#919191",
+                  "#5B6B7A"
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 13,
+            "width": 3,
+            "height": 7
+          }
+        }
+      ]
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED"
+    }
+  }
+}

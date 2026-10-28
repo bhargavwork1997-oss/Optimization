@@ -14,6 +14,7 @@
 # MAGIC | 7. Regression tests | isolated `dpo_test_*` schemas (dev profiles only) | **parallel** with 3–5 |
 # MAGIC | 8. Verify | required sources available, no rule errors, reporting views exist | after 5 |
 # MAGIC | 9. Schedule | daily pipeline job (+ governance job on enterprise), run-as service principals, group permissions | after 8 |
+# MAGIC | 10. Dashboards | *DPO · Cost optimization* (reporting views) and *DPO · Engineering* (gold/ops), published without embedded credentials, group permissions | **parallel** with 9 |
 # MAGIC
 # MAGIC Safe to re-run: every step is idempotent. Set `mode = check_only` to run the access gate alone.
 
@@ -39,6 +40,8 @@ dbutils.widgets.text("governance_run_as", "", "Governance SP application ID (ent
 dbutils.widgets.dropdown("include_lab", "yes", ["yes", "no"], "Run optimization lab")
 dbutils.widgets.dropdown("schedule", "active", ["active", "paused", "none"], "Scheduled jobs")
 dbutils.widgets.text("accepted_checks", "", "Accept blockers (comma list of check names)")
+dbutils.widgets.dropdown("dashboards", "yes", ["yes", "no"], "Publish dashboards")
+dbutils.widgets.text("warehouse", "", "SQL warehouse name for dashboards (blank = first serverless)")
 
 MODE = dbutils.widgets.get("mode")
 RUN_AS = dbutils.widgets.get("pipeline_run_as").strip()
@@ -101,11 +104,23 @@ if dbutils.widgets.get("schedule") != "none":
         schedule_fn = lambda: installer.schedule_jobs(cfg, SDK, NOTEBOOK_DIR, RUN_AS, ADMIN_RUN_AS,
                                                       active=dbutils.widgets.get("schedule") == "active")
 
+dashboard_fn = None
+if dbutils.widgets.get("dashboards") == "yes":
+    if SDK is None or NOTEBOOK_DIR is None:
+        print("Dashboards skipped: Databricks SDK or notebook path unavailable; deploy the asset bundle instead.")
+    else:
+        from dpo import dashboard
+        # outside the Git folder, so publishing never dirties the repo
+        DASH_DIR = f"/Workspace/Users/{SDK.current_user.me().user_name}/dpo-dashboards-{cfg.profile}"
+        dashboard_fn = lambda: dashboard.publish_dashboards(cfg, SDK, REPO_ROOT, DASH_DIR,
+                                                            dbutils.widgets.get("warehouse").strip())
+
 steps = installer.build_plan(
     spark, cfg, RUN_ID,
     run_notebook=lambda path, args, timeout: dbutils.notebook.run(path, timeout, args),
     include_lab=dbutils.widgets.get("include_lab") == "yes",
     schedule_fn=schedule_fn,
+    dashboard_fn=dashboard_fn,
 )
 results = installer.run_plan(steps, max_parallel=3)
 

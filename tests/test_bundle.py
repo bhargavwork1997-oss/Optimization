@@ -157,3 +157,26 @@ def test_against_cli_schema():
     for f in _files()[1]:
         errs = [jsonschema.exceptions.best_match([e]) for e in v.iter_errors(_load(f))]
         assert not errs, [(f, "/".join(map(str, e.absolute_path)), e.message[:200]) for e in errs]
+
+
+@pytest.mark.parametrize("target", TARGETS)
+def test_dashboards_deployed_safely(target):
+    """Both generated dashboards per target; no embedded credentials (would bypass row-level security);
+    the gold/ops dashboard never reaches viewers; the file matches the target's profile."""
+    root = _load(BUNDLE)
+    cfg = root["targets"][target]
+    prof = (cfg.get("variables") or {}).get("profile", root["variables"]["profile"]["default"])
+    dash = (cfg.get("resources") or {}).get("dashboards") or {}
+    assert set(dash) == {"dpo_cost", "dpo_engineering"}, target
+    assert "lookup" in cfg["variables"]["warehouse_id"], f"{target}: warehouse must be resolved by name"
+    for k, d in dash.items():
+        assert d["embed_credentials"] is False, f"{target}/{k}"
+        assert d["warehouse_id"] == "${var.warehouse_id}"
+        expected = f"./dashboards/{prof}/{'cost_optimization' if k == 'dpo_cost' else 'engineering'}.lvdash.json"
+        assert d["file_path"] == expected and os.path.isfile(os.path.join(ROOT, expected)), (target, k)
+        groups = {p.get("group_name") for p in d.get("permissions", [])}
+        if k == "dpo_engineering":
+            assert "${var.viewers_group}" not in groups, f"{target}: engineering reads gold/ops"
+        if target != "dev":
+            assert {"${var.analysts_group}", "${var.operators_group}"} <= groups
+            assert all(p["level"] in ("CAN_RUN", "CAN_MANAGE") for p in d.get("permissions", []))

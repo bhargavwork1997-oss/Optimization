@@ -3,6 +3,8 @@
 /config/environments/   @bhargavwork1997-oss/dpo-admins
 /config/rules.json      @bhargavwork1997-oss/dpo-admins
 /src/dpo/governance.py  @bhargavwork1997-oss/dpo-admins
+/src/dpo/dashboard.py   @bhargavwork1997-oss/dpo-admins
+/dashboards/            @bhargavwork1997-oss/dpo-admins
 /databricks.yml         @bhargavwork1997-oss/dpo-admins
 /resources/             @bhargavwork1997-oss/dpo-admins
 /.github/               @bhargavwork1997-oss/dpo-admins

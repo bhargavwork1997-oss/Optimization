@@ -23,7 +23,7 @@ resources:
       tags: {app: dpo-accelerator, dpo_profile: "${var.profile}", cost_center: platform-finops}
 
     # One-time (and safe to re-run) installer: access gate -> setup -> first pipeline run -> views -> verify.
-    # Scheduling is left to the bundle (schedule=none), so the installer never creates jobs of its own.
+    # Jobs and dashboards are left to the bundle (schedule=none, dashboards=no): the installer creates neither.
     dpo_install:
       name: dpo-install-${var.profile}
       max_concurrent_runs: 1
@@ -36,6 +36,7 @@ resources:
             notebook_path: ../notebooks/00_install.py
             base_parameters:
               schedule: none
+              dashboards: "no"                      # the bundle deploys the dashboards
               include_lab: "yes"
               pipeline_run_as: ${var.service_principal}
               governance_run_as: ${var.admin_service_principal}

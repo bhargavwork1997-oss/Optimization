@@ -39,11 +39,11 @@ The bundle (`databricks.yml` + `resources/`) is the deployment unit: code, jobs,
 permissions per environment. Validated with `databricks bundle validate` for all three targets and against the
 CLI's schema in CI.
 
-| Target | Mode | Runs as | Jobs |
-|---|---|---|---|
-| `dev` (Free Edition) | development | you | `dpo_pipeline`, `dpo_install`, `dpo_tests` |
-| `enterprise_dev` | development | deployer | + `dpo_governance`; per-job group permissions |
-| `enterprise_prod` | production | `sp-dpo` (pipeline), `sp-dpo-admin` (install, governance) | install/governance admins-only |
+| Target | Mode | Runs as | Jobs | Dashboards (warehouse lookup) |
+|---|---|---|---|---|
+| `dev` (Free Edition) | development | you | `dpo_pipeline`, `dpo_install`, `dpo_tests` | both · `Serverless Starter Warehouse` |
+| `enterprise_dev` | development | deployer | + `dpo_governance`; per-job group permissions | both · `dpo-sql`, group permissions |
+| `enterprise_prod` | production | `sp-dpo` (pipeline), `sp-dpo-admin` (install, governance) | install/governance admins-only | both · `dpo-sql`, group permissions |
 
 ```bash
 databricks bundle validate -t enterprise_prod --profile <client-cli-profile>
@@ -67,7 +67,23 @@ access gate and steps as `dpo_install`; it also creates the scheduled jobs, unle
 this profile already exist (detected by tag), in which case it changes nothing. `mode = check_only` runs the
 gate alone.
 
-Day to day: `02_run_pipeline` (manual run), `06_governance_audit` (monthly), the dashboard.
+Day to day: `02_run_pipeline` (manual run), `06_governance_audit` (monthly), the dashboards.
+
+## Dashboards (as code)
+
+Two AI/BI dashboards per profile, generated from the profile by `src/dpo/dashboard.py` into
+`dashboards/<profile>/*.lvdash.json` and deployed by the bundle (`resources.dashboards`) — nothing to build by hand.
+
+| Dashboard | Pages | Reads | Who |
+|---|---|---|---|
+| **DPO · Cost optimization** | Overview (KPIs, daily cost by product, cost by cost centre, findings and savings by category, top workloads) · Recommendations (scored backlog with evidence, narrative and action; value vs feasibility; score breakdown) | `reporting` views only | viewers, analysts, operators |
+| **DPO · Engineering** | Jobs & queries (reliability scorecard with R06 highlight, expensive query shapes) · Pipeline health (latest run, recent runs, sources, data quality, rule status) | gold, ops | analysts, operators |
+
+Both are published **without embedded credentials**, so each reader's own grants apply (row-level security,
+hashed identities). Readers need **CAN_USE** on the SQL warehouse. To change a dashboard, edit
+`src/dpo/dashboard.py`, run `cd src && python -m dpo.dashboard`, commit the regenerated files and deploy;
+CI fails if the files are stale. Edits made in the UI are overwritten by the next deploy. Without the CLI,
+`00_install` publishes them too (widgets `dashboards`, `warehouse`). Details: `docs/dashboard-guide.md`.
 
 ## Local tests (no Databricks)
 
@@ -81,12 +97,12 @@ pytest -q -m slow                      # 5x volume
 
 ```
 config/       rules.json (17 rules) · environments/*.json (profiles)
-src/dpo/      config · governance · installer · transforms · synth · pipeline · rules · recommend · validation
+src/dpo/      config · governance · installer · transforms · synth · pipeline · rules · recommend · validation · dashboard
 notebooks/    00_install · 00_setup · 01_generate_synthetic_data · 02_run_pipeline · 03_optimization_lab
               04_regression_tests · 05_stress_tests · 06_governance_audit · _common
-dashboards/   dashboard_datasets.sql
+dashboards/   <profile>/cost_optimization.lvdash.json · <profile>/engineering.lvdash.json (generated)
 docs/         data-contract.md · dashboard-guide.md · ado-backlog.md
-resources/    dpo_jobs.yml          databricks.yml (targets dev / enterprise_dev / enterprise_prod)
+resources/    dpo_jobs.yml          databricks.yml (targets dev / enterprise_dev / enterprise_prod, dashboards)
 tests/        pytest suites (incl. test_bundle.py) + golden/small_seed42.json
 GOVERNANCE.md · .github/ (CI with bundle-schema check, deploy workflow, CODEOWNERS)
 ```

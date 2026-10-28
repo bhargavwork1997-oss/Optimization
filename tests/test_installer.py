@@ -1,5 +1,6 @@
 """Installer: step ordering/parallelism, access gate, job specs, and end-to-end install runs."""
 import copy
+import os
 import threading
 import time
 from types import SimpleNamespace as NS
@@ -216,7 +217,8 @@ def test_full_install_free_edition_style(spark):
     st = {r["step"]: r["status"] for r in res}
     assert st == {"governance_base": "SUCCESS", "synthetic_data": "SUCCESS", "pipeline": "SUCCESS",
                   "viewer_layer": "SUCCESS", "optimization_lab": "DISABLED", "regression_tests": "DISABLED",
-                  "verify": "SUCCESS", "schedule_jobs": "DISABLED"}
+                  "verify": "SUCCESS", "schedule_jobs": "DISABLED",
+                  "dashboards": "DISABLED"}
     verify = next(r for r in res if r["step"] == "verify")["detail"]
     assert '"findings": 17' in verify
     # idempotent: a second install reuses data and succeeds
@@ -256,3 +258,51 @@ def test_full_install_enforced_as_admin_builds_secured_views(spark):
     assert "recommendations" in names
     audit = [(r.action, r.status) for r in spark.table("instenf_ops.audit_log").collect()]
     assert ("admin_apply", "APPLIED") in audit and ("pipeline_run", "SUCCESS") in audit
+
+
+def test_publish_dashboards_creates_publishes_without_credentials_and_respects_bundle(tmp_path):
+    from types import SimpleNamespace as NS
+    from dpo import dashboard
+    from dpo.config import DPOConfig
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    cfg = DPOConfig.from_profile("enterprise_prod")
+    calls = {"create": [], "update": [], "publish": [], "perms": [], "mkdirs": []}
+
+    class Lakeview:
+        def __init__(self, existing=()):
+            self.existing = list(existing)
+        def list(self):
+            return self.existing
+        def create(self, d):
+            calls["create"].append(d); return NS(dashboard_id=f"new-{len(calls['create'])}")
+        def update(self, i, d):
+            calls["update"].append((i, d)); return NS(dashboard_id=i)
+        def publish(self, i, embed_credentials=None, warehouse_id=None):
+            calls["publish"].append((i, embed_credentials, warehouse_id))
+
+    sdk = NS(jobs=NS(list=lambda: []), lakeview=Lakeview(),
+             warehouses=NS(list=lambda: [NS(id="w1", name="Starter", enable_serverless_compute=False),
+                                         NS(id="w2", name="dpo-sql", enable_serverless_compute=True)]),
+             workspace=NS(mkdirs=lambda p: calls["mkdirs"].append(p)),
+             permissions=NS(set=lambda kind, i, access_control_list: calls["perms"].append((kind, i, access_control_list))))
+    out = dashboard.publish_dashboards(cfg, sdk, root, "/Workspace/Users/a@b/dpo")
+    assert [o["action"].split(",")[0] for o in out] == ["created", "created"]
+    assert all(e is False and w == "w2" for _, e, w in calls["publish"])        # serverless chosen, no creds
+    assert calls["create"][0].parent_path == "/Workspace/Users/a@b/dpo" and calls["mkdirs"]
+    eng_groups = {a.group_name for a in calls["perms"][1][2]}
+    assert cfg.group("viewers") not in eng_groups and calls["perms"][0][0] == "dashboards"
+    # second run updates in place
+    sdk.lakeview.existing = [NS(display_name=f"{t} ({cfg.profile})", dashboard_id=f"id{i}", path=f"/Workspace/Users/a@b/dpo/{i}")
+                             for i, t in enumerate(dashboard.DASHBOARDS.values())]
+    out = dashboard.publish_dashboards(cfg, sdk, root, "/Workspace/Users/a@b/dpo", "dpo-sql")
+    assert [o["action"].split(",")[0] for o in out] == ["updated", "updated"]
+    # unknown warehouse is a clear error
+    with pytest.raises(RuntimeError, match="not found"):
+        dashboard.publish_dashboards(cfg, sdk, root, "/x", "nope")
+    # bundle-managed: change nothing
+    dep = NS(kind="BUNDLE")
+    sdk.jobs = NS(list=lambda: [NS(job_id=1, settings=NS(name="x", deployment=dep,
+                                                          tags={"app": "dpo-accelerator", "dpo_profile": cfg.profile}))])
+    n = len(calls["publish"])
+    assert all("asset bundle" in o["action"] for o in dashboard.publish_dashboards(cfg, sdk, root, "/x"))
+    assert len(calls["publish"]) == n
