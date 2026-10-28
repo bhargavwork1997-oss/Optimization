@@ -28,6 +28,9 @@ DASHBOARDS = {
     "cost_optimization": "DPO · Cost optimization",
     "engineering": "DPO · Engineering",
 }
+# Column names the dashboard engine reserves: when it materializes a dataset as a metric view, a column
+# called `source` is read as `source.*` and fails with INVALID_EXTRACT_BASE_FIELD_TYPE.
+RESERVED_COLUMNS = ("source",)
 # layers each dashboard may read; enforced by tests/test_dashboard.py
 ALLOWED_LAYERS = {"cost_optimization": ("reporting",), "engineering": ("gold", "ops")}
 
@@ -124,11 +127,11 @@ SELECT run_id, min(run_ts) AS started,
        count(*) AS stages, count_if(status = 'FAILED') AS failed_stages, round(sum(seconds), 1) AS seconds
 FROM {o('run_log')} GROUP BY run_id"""),
         "ds_sources": ("Source availability", f"""
-SELECT source, table_name, status, rows, missing_columns, message,
+SELECT source AS source_name, table_name, status, rows, missing_columns, message,
        CASE WHEN status = 'available' THEN 0 ELSE 1 END AS not_available
 FROM {o('source_status')} WHERE run_id = {latest('source_status')}"""),
         "ds_dq": ("Data quality", f"""
-SELECT source, rows_in, rows_out, rows_quarantined, duplicates_removed, reasons
+SELECT source AS source_name, rows_in, rows_out, rows_quarantined, duplicates_removed, reasons
 FROM {o('dq_report')} WHERE run_id = {latest('dq_report')}"""),
         "ds_rules": ("Rule status", f"""
 SELECT rule_id, status, findings, round(seconds, 2) AS seconds, message
@@ -388,11 +391,11 @@ def _engineering_pages(cfg: DPOConfig) -> list[dict]:
             ("failed_stages", "Failed", "int"), ("seconds", "Seconds", "float"), ("run_id", "Run", "string")],
             "Recent runs", 3, 3, 3, 7),
         b.table("ph_sources", "ds_sources", [
-            ("source", "Source", "string"), ("table_name", "Table", "string"), ("status", "Status", "string"),
+            ("source_name", "Source", "string"), ("table_name", "Table", "string"), ("status", "Status", "string"),
             ("rows", "Rows in window", "int"), ("missing_columns", "Missing columns", "string"),
             ("message", "Message", "string")], "Source availability", 0, 10, 3, 7),
         b.table("ph_dq", "ds_dq", [
-            ("source", "Source", "string"), ("rows_in", "Rows in", "int"), ("rows_out", "Rows out", "int"),
+            ("source_name", "Source", "string"), ("rows_in", "Rows in", "int"), ("rows_out", "Rows out", "int"),
             ("rows_quarantined", "Quarantined", "int"), ("duplicates_removed", "Duplicates removed", "int"),
             ("reasons", "Reasons", "string")], "Data quality", 3, 10, 3, 7),
         b.table("ph_rules", "ds_rules", [

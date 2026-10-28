@@ -119,7 +119,10 @@ def test_every_dataset_and_widget_query_runs(spark, built, key):
     from dpo.dashboard import build
     d = build(built, key)
     sql = {x["name"]: "".join(x["queryLines"]) for x in d["datasets"]}
+    from dpo.dashboard import RESERVED_COLUMNS
     for name, q in sql.items():
+        cols = {c.lower() for c in spark.sql(q).columns}
+        assert not cols & set(RESERVED_COLUMNS), f"{key}/{name}: rename {cols & set(RESERVED_COLUMNS)}"
         n = spark.sql(q).count()
         assert n > 0, f"{key}/{name} returned no rows on the reference data set"
     for page in d["pages"]:

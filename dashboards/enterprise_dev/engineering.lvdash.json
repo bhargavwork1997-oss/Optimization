@@ -53,7 +53,7 @@
       "name": "ds_sources",
       "displayName": "Source availability",
       "queryLines": [
-        "SELECT source, table_name, status, rows, missing_columns, message,\n",
+        "SELECT source AS source_name, table_name, status, rows, missing_columns, message,\n",
         "       CASE WHEN status = 'available' THEN 0 ELSE 1 END AS not_available\n",
         "FROM dpo_dev.ops.source_status WHERE run_id = (SELECT max_by(run_id, run_ts) FROM dpo_dev.ops.source_status)\n"
       ]
@@ -62,7 +62,7 @@
       "name": "ds_dq",
       "displayName": "Data quality",
       "queryLines": [
-        "SELECT source, rows_in, rows_out, rows_quarantined, duplicates_removed, reasons\n",
+        "SELECT source AS source_name, rows_in, rows_out, rows_quarantined, duplicates_removed, reasons\n",
         "FROM dpo_dev.ops.dq_report WHERE run_id = (SELECT max_by(run_id, run_ts) FROM dpo_dev.ops.dq_report)\n"
       ]
     },
@@ -1690,8 +1690,8 @@
                   "disaggregated": true,
                   "fields": [
                     {
-                      "name": "source",
-                      "expression": "`source`"
+                      "name": "source_name",
+                      "expression": "`source_name`"
                     },
                     {
                       "name": "table_name",
@@ -1745,7 +1745,7 @@
                     "preserveWhitespace": false,
                     "useMonospaceFont": false,
                     "visible": true,
-                    "fieldName": "source",
+                    "fieldName": "source_name",
                     "displayName": "Source",
                     "title": "Source",
                     "order": 100000,
@@ -1917,8 +1917,8 @@
                   "disaggregated": true,
                   "fields": [
                     {
-                      "name": "source",
-                      "expression": "`source`"
+                      "name": "source_name",
+                      "expression": "`source_name`"
                     },
                     {
                       "name": "rows_in",
@@ -1972,7 +1972,7 @@
                     "preserveWhitespace": false,
                     "useMonospaceFont": false,
                     "visible": true,
-                    "fieldName": "source",
+                    "fieldName": "source_name",
                     "displayName": "Source",
                     "title": "Source",
                     "order": 100000,
