@@ -73,6 +73,32 @@
         "SELECT rule_id, status, findings, round(seconds, 2) AS seconds, message\n",
         "FROM workspace.dpo_ops.rule_status WHERE run_id = (SELECT max_by(run_id, run_ts) FROM workspace.dpo_ops.run_log)\n"
       ]
+    },
+    {
+      "name": "ds_self_summary",
+      "displayName": "DPO cost summary",
+      "queryLines": [
+        "SELECT dpo_monthly_cost, jobs_monthly, sql_monthly, tagged_monthly,\n",
+        "       round(share_of_total_spend * 100, 3) AS share_of_spend_pct, est_monthly_savings,\n",
+        "       p1_est_monthly_savings, savings_to_cost_ratio, dpo_job_runs, window_days, computed_at\n",
+        "FROM workspace.dpo_gold.dpo_cost_summary\n"
+      ]
+    },
+    {
+      "name": "ds_self_daily",
+      "displayName": "DPO cost by day",
+      "queryLines": [
+        "SELECT usage_date, component, item, product, cost, dbus FROM workspace.dpo_gold.dpo_cost_daily\n"
+      ]
+    },
+    {
+      "name": "ds_self_runs",
+      "displayName": "DPO job runs",
+      "queryLines": [
+        "SELECT job_name, job_run_id, start_time, result_state, round(duration_s / 60.0, 1) AS minutes,\n",
+        "       round(cost, 4) AS cost, round(dbus, 3) AS dbus\n",
+        "FROM workspace.dpo_gold.dpo_run_cost\n"
+      ]
     }
   ],
   "pages": [
@@ -2329,6 +2355,663 @@
           "position": {
             "x": 0,
             "y": 17,
+            "width": 6,
+            "height": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "dpo_cost",
+      "displayName": "DPO's own cost",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layout": [
+        {
+          "widget": {
+            "name": "sc_header",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## What DPO itself costs",
+                "DPO runs on Databricks, so its own jobs and the dashboard / Genie queries on DPO tables are billed too. **jobs** = DPO's jobs (pipeline, install, governance, tests) · **sql** = warehouse cost of queries that read DPO schemas · **tagged** = other usage tagged `app=dpo-accelerator`.",
+                "Billing lags a few hours: today's runs fill in on the next run. Pay-per-token AI calls billed only to the model endpoint are not included (see the `narrate` row of the run log for call counts)."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "sc_k_cost",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_self_summary",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "value",
+                      "expression": "SUM(`dpo_monthly_cost`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "frame": {
+                "showTitle": true,
+                "title": "DPO cost / month (USD)"
+              },
+              "encodings": {
+                "value": {
+                  "fieldName": "value",
+                  "displayName": "DPO cost / month (USD)",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "sc_k_savings",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_self_summary",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "value",
+                      "expression": "SUM(`est_monthly_savings`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "frame": {
+                "showTitle": true,
+                "title": "Est. savings found / month (USD)",
+                "showDescription": true,
+                "description": "Unvalidated estimate"
+              },
+              "encodings": {
+                "value": {
+                  "fieldName": "value",
+                  "displayName": "Est. savings found / month (USD)",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "sc_k_ratio",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_self_summary",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "value",
+                      "expression": "SUM(`savings_to_cost_ratio`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "frame": {
+                "showTitle": true,
+                "title": "Savings-to-cost ratio",
+                "showDescription": true,
+                "description": "Estimated savings ÷ DPO cost"
+              },
+              "encodings": {
+                "value": {
+                  "fieldName": "value",
+                  "displayName": "Savings-to-cost ratio",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "sc_k_share",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_self_summary",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "value",
+                      "expression": "SUM(`share_of_spend_pct`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "frame": {
+                "showTitle": true,
+                "title": "DPO share of all spend (%)"
+              },
+              "encodings": {
+                "value": {
+                  "fieldName": "value",
+                  "displayName": "DPO share of all spend (%)",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 5,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "sc_daily",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_self_daily",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "usage_date",
+                      "expression": "`usage_date`"
+                    },
+                    {
+                      "name": "y",
+                      "expression": "SUM(`cost`)"
+                    },
+                    {
+                      "name": "component",
+                      "expression": "`component`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "usage_date",
+                  "displayName": "Day",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "axis": {
+                    "title": "Day"
+                  }
+                },
+                "y": {
+                  "fieldName": "y",
+                  "displayName": "Cost (USD)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "axis": {
+                    "title": "Cost (USD)"
+                  }
+                },
+                "label": {
+                  "show": false
+                },
+                "color": {
+                  "fieldName": "component",
+                  "displayName": "component",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "DPO cost by day and component"
+              },
+              "mark": {
+                "colors": [
+                  "#1F4E99",
+                  "#E0A030",
+                  "#2E8B57",
+                  "#C2551A",
+                  "#7FA7D9",
+                  "#8A3A0B",
+                  "#99C9A6",
+                  "#F2B8A0",
+                  "#919191",
+                  "#5B6B7A"
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "sc_items",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_self_daily",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "item",
+                      "expression": "`item`"
+                    },
+                    {
+                      "name": "y",
+                      "expression": "SUM(`cost`)"
+                    },
+                    {
+                      "name": "component",
+                      "expression": "`component`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "item",
+                  "displayName": "Job / client",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "axis": {
+                    "title": "Job / client"
+                  }
+                },
+                "y": {
+                  "fieldName": "y",
+                  "displayName": "Cost (USD)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "axis": {
+                    "title": "Cost (USD)"
+                  }
+                },
+                "label": {
+                  "show": false
+                },
+                "color": {
+                  "fieldName": "component",
+                  "displayName": "component",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "By job or client"
+              },
+              "mark": {
+                "colors": [
+                  "#1F4E99",
+                  "#E0A030",
+                  "#2E8B57",
+                  "#C2551A",
+                  "#7FA7D9",
+                  "#8A3A0B",
+                  "#99C9A6",
+                  "#F2B8A0",
+                  "#919191",
+                  "#5B6B7A"
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 4,
+            "width": 2,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "sc_runs",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_self_runs",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "name": "start_time",
+                      "expression": "`start_time`"
+                    },
+                    {
+                      "name": "job_name",
+                      "expression": "`job_name`"
+                    },
+                    {
+                      "name": "result_state",
+                      "expression": "`result_state`"
+                    },
+                    {
+                      "name": "minutes",
+                      "expression": "`minutes`"
+                    },
+                    {
+                      "name": "cost",
+                      "expression": "`cost`"
+                    },
+                    {
+                      "name": "dbus",
+                      "expression": "`dbus`"
+                    },
+                    {
+                      "name": "job_run_id",
+                      "expression": "`job_run_id`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "frame": {
+                "showTitle": true,
+                "title": "Cost per DPO job run"
+              },
+              "encodings": {
+                "columns": [
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "start_time",
+                    "displayName": "Started",
+                    "title": "Started",
+                    "order": 100000,
+                    "type": "datetime",
+                    "displayAs": "datetime",
+                    "alignContent": "right"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "job_name",
+                    "displayName": "Job",
+                    "title": "Job",
+                    "order": 100001,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "result_state",
+                    "displayName": "Result",
+                    "title": "Result",
+                    "order": 100002,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "minutes",
+                    "displayName": "Minutes",
+                    "title": "Minutes",
+                    "order": 100003,
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "0.00"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "cost",
+                    "displayName": "Cost",
+                    "title": "Cost",
+                    "order": 100004,
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "$0,0.00"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "dbus",
+                    "displayName": "DBUs",
+                    "title": "DBUs",
+                    "order": 100005,
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "0.00"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "job_run_id",
+                    "displayName": "Run id",
+                    "title": "Run id",
+                    "order": 100006,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  }
+                ]
+              },
+              "invisibleColumns": [],
+              "allowHTMLByDefault": false,
+              "itemsPerPage": 25,
+              "paginationSize": "default",
+              "condensed": true,
+              "withRowNumber": false
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 10,
             "width": 6,
             "height": 7
           }

@@ -55,8 +55,16 @@ def test_generator_is_deterministic(spark):
     a, b = local_cfg(prefix="det_a_"), local_cfg(prefix="det_b_")
     synth.generate(spark, a, "small", seed=11, end_date="2026-10-27")
     synth.generate(spark, b, "small", seed=11, end_date="2026-10-27")
+    from pyspark.sql import functions as F
+
+    def norm(cfg, name):
+        df = spark.table(cfg.t("sim", name))
+        if name == "query_history":   # DPO's own dashboard queries name DPO's schema, which differs by prefix
+            df = df.withColumn("statement_text", F.replace("statement_text", F.lit(cfg.schema("reporting")),
+                                                           F.lit("<dpo_reporting>")))
+        return df
     for name in ("billing_usage", "job_run_timeline", "query_history", "node_timeline"):
-        assert checksum(spark.table(a.t("sim", name))) == checksum(spark.table(b.t("sim", name))), name
+        assert checksum(norm(a, name)) == checksum(norm(b, name)), name
 
 
 @pytest.mark.slow

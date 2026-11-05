@@ -1,22 +1,37 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # 00 · Governance re-apply (admins)
-# MAGIC First-time installation: use **`00_install`** instead. This notebook re-applies grants, views and
-# MAGIC ownership; the daily `dpo-governance` job runs it.
-# MAGIC 1. **Preflight** – catalog, system-table access, groups, your rights, risky settings; with the fix for each gap.
-# MAGIC 2. **Governance plan** – every statement the role model needs (`plan_only`), or applied (`apply`).
 # MAGIC
-# MAGIC `apply` creates the catalog, schemas, admin-only `security` schema (access map, identity salt),
-# MAGIC the append-only audit log, grants, ownership, classification tags and the secured `reporting` views,
-# MAGIC then audits grant drift (revoking it in prod).
+# MAGIC **Purpose.** Re-applies the role model: catalog and schemas, grants, ownership, classification tags, the admin-only
+# MAGIC `security` schema, the append-only audit log and the secured `reporting` views; then checks grant drift and, in
+# MAGIC production, revokes it. First-time installation: use **`00_install`** instead.
 # MAGIC
-# MAGIC **Who runs this:** on enterprise profiles, only a member of the admins group (or the admin service
-# MAGIC principal). The pipeline identity cannot. Re-run after the first pipeline run so the reporting views
-# MAGIC are created, and after any change to profiles or groups. Safe to re-run.
+# MAGIC | | |
+# MAGIC |---|---|
+# MAGIC | **Who runs it** | enterprise: a member of `dpo-admins` or the admin service principal (the daily `dpo-governance` job). The pipeline identity cannot. Free Edition: you |
+# MAGIC | **When** | daily (job); after the first pipeline run (creates the views); after changing a profile, groups or `security.access_map` |
+# MAGIC | **Reads** | profile, current grants, system-table access |
+# MAGIC | **Writes** | grants, ownership, tags, `reporting` views, `ops.governance_log`, `ops.governance_drift` (only with `apply`) |
+# MAGIC | **How to run** | set `apply_governance` = `plan_only` to review the SQL, then `apply` → **Run all** |
+# MAGIC
+# MAGIC Safe to re-run: every statement is idempotent. Objects that do not exist yet are reported as SKIPPED, not errors.
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Shared bootstrap
+# MAGIC Loads the DPO package, detects the profile, creates the shared widgets and builds `cfg` (see `_common`).
 
 # COMMAND ----------
 
 # MAGIC %run ./_common
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### 1 · Preflight
+# MAGIC Read-only checks with a fix for every gap: catalog exists, system tables readable, groups exist, your rights,
+# MAGIC risky settings (for example governance switched off with real telemetry).
 
 # COMMAND ----------
 
@@ -27,7 +42,11 @@ display(spark.createDataFrame(governance.preflight(spark, cfg), "check string, s
 
 # COMMAND ----------
 
-# MAGIC %md ### Governance plan / apply
+# MAGIC %md
+# MAGIC ### 2 · Governance plan / apply
+# MAGIC `plan_only` lists every statement the role model needs without running it. `apply` runs them, refuses to continue
+# MAGIC if you are not an admin, writes each result to `ops.governance_log`, then compares `SHOW GRANTS` with the role
+# MAGIC model (drift). In production, extra principals are revoked.
 
 # COMMAND ----------
 

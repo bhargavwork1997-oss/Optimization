@@ -9,7 +9,8 @@ Role model (group names come from the profile):
 
 Two execution paths, deliberately separated:
 
-  pipeline (operators)  authorize -> ensure data schemas -> stages -> verify governance (read-only)
+  pipeline (operators)  runtime guard -> authorize -> ensure data schemas -> stages -> verify governance
+                        (read-only)
   admin    (admins)     admin_apply(): security schema, grants, ownership, reporting views,
                         append-only audit log, drift revocation
 
@@ -37,6 +38,8 @@ REPORTING_VIEWS = {
     "workload_summary": ("gold", "workload_summary", [], ["share_of_total", "cost_rank"]),
     "job_scorecard": ("gold", "job_scorecard", ["creator_id"], []),
     "cost_by_dimension": ("gold", "cost_by_dimension", ["run_as"], []),
+    "budget_outlook": ("gold", "budget_outlook", [], []),
+    "cost_forecast": ("gold", "cost_forecast", [], []),
 }
 ANALYST_OPS_TABLES = ("run_log", "dq_report", "source_status", "rule_status", "test_results",
                       "perf_results", "governance_log", "governance_drift")
@@ -59,6 +62,7 @@ def _p(principal: str) -> str:
 
 
 def member(cfg: DPOConfig, group: str) -> str:
+    """SQL expression: is the reader in this group? (simulated in local tests only)."""
     sim = cfg.governance.get("simulate_membership")
     if sim is not None:
         return "true" if sim.get(group) else "false"
@@ -66,6 +70,7 @@ def member(cfg: DPOConfig, group: str) -> str:
 
 
 def current_user_expr(cfg: DPOConfig) -> str:
+    """SQL expression for the reader's identity."""
     u = cfg.governance.get("simulate_user")
     return f"'{u}'" if u else "current_user()"
 
@@ -78,6 +83,9 @@ def privileged_expr(cfg: DPOConfig) -> str:
 
 
 def row_visibility_expr(cfg: DPOConfig, cc_col: str = "cost_center") -> str:
+    """SQL predicate for the dynamic views: privileged roles see all rows; viewers see the cost
+    centres mapped to their groups in the profile plus rows granted to them in security.access_map.
+    """
     if not cfg.governance["enforce"]:
         return "true"
     cc = f"coalesce({cc_col}, '(untagged)')"
@@ -91,6 +99,7 @@ def row_visibility_expr(cfg: DPOConfig, cc_col: str = "cost_center") -> str:
 
 
 def identity_expr(cfg: DPOConfig, col: str) -> str:
+    """SQL expression: real identity for privileged readers, salted SHA-256 pseudonym for viewers."""
     if not (cfg.governance["enforce"] and cfg.governance["mask_identities_for_viewers"]):
         return f"`{col}`"
     salt = (f"(SELECT max(setting_value) FROM {cfg.t('security', 'settings')} "
@@ -100,6 +109,7 @@ def identity_expr(cfg: DPOConfig, col: str) -> str:
 
 
 def masked_expr(cfg: DPOConfig, col: str) -> str:
+    """SQL expression: the column for privileged readers, NULL for viewers (prevents inference of totals)."""
     if not cfg.governance["enforce"]:
         return f"`{col}`"
     return f"CASE WHEN {privileged_expr(cfg)} THEN `{col}` END"
@@ -145,6 +155,7 @@ def plan_security(cfg: DPOConfig) -> list[Stmt]:
 
 
 def plan_grants(cfg: DPOConfig) -> list[Stmt]:
+    """GRANT statements, ownership and tags implementing the role model for every DPO schema."""
     g, gv = cfg.governance, cfg.governance["groups"]
     admins, ops, ana, view = (_p(gv[r]) for r in ("admins", "operators", "analysts", "viewers"))
     out: list[Stmt] = []
@@ -242,6 +253,9 @@ def _exists(spark, fq: str) -> bool:
 
 
 def apply(spark, cfg: DPOConfig, stmts: list[Stmt], run_id: str = "", dry_run: bool = False) -> list[tuple]:
+    """Run statements (or list them with dry_run), log each result to ops.governance_log, and fail on errors
+    when the profile says so.
+    """
     rows = []
     for s in stmts:
         if dry_run:
@@ -281,6 +295,7 @@ def _write(spark, cfg, table, rows, schema, run_id, mode="overwrite"):
 
 # ----------------------------------------------------------------- identity ---
 def current_user(spark, cfg: DPOConfig) -> str:
+    """The identity running this session."""
     if cfg.governance.get("simulate_user"):
         return cfg.governance["simulate_user"]
     try:
@@ -313,8 +328,44 @@ def is_authorized(spark, cfg: DPOConfig, roles: tuple = ("admins", "operators"))
                           f"or run as the DPO service principal.")
 
 
+def workspace_host(spark) -> Optional[str]:
+    """This workspace's host on Databricks; None locally."""
+    try:
+        return spark.conf.get("spark.databricks.workspaceUrl", None)
+    except Exception:   # noqa: BLE001 - not available outside Databricks
+        return None
+
+
+def runtime_guard(spark, cfg: DPOConfig) -> tuple[bool, str]:
+    """Checks that must hold on EVERY run, not only at install time.
+
+    The pipeline job lets operators "run now" with other parameters (profile, source_mode, catalog).
+    Without these checks, running the Free Edition profile with source_mode=system inside an enterprise
+    workspace would copy real system-table data into an ungoverned schema readable by anyone.
+    """
+    if cfg.source_mode == "system" and not cfg.governance["enforce"]:
+        return False, (f"profile '{cfg.profile}' has governance.enforce = false: refusing to read real system "
+                       "tables into an ungoverned schema. Use an enterprise profile.")
+    g = cfg.governance
+    if (g["enforce"] and cfg.profile_catalog and cfg.catalog != cfg.profile_catalog
+            and cfg.catalog not in g.get("allowed_catalogs", [])):
+        # e.g. "run now" with catalog=<a catalog every user can read>: results would leave the governed catalog
+        return False, (f"catalog '{cfg.catalog}' is not the profile's catalog '{cfg.profile_catalog}'. Add it to "
+                       "governance.allowed_catalogs in the profile if this redirect is intended.")
+    from .config import normalize_host
+    host = normalize_host(workspace_host(spark))
+    allowed = [normalize_host(h) for h in cfg.workspace_hosts]
+    if host and allowed and host not in allowed:
+        return False, (f"profile '{cfg.profile}' is bound to {', '.join(allowed)} but this workspace is {host}. "
+                       "Use the profile for this workspace, or add the host to workspace_hosts.")
+    return True, "runtime guard passed"
+
+
 def authorize(spark, cfg: DPOConfig, run_id: str = "", roles: tuple = ("admins", "operators")) -> str:
-    ok, reason = is_authorized(spark, cfg, roles)
+    """Raise PermissionError unless the caller may run DPO here; every decision is audited."""
+    ok, reason = runtime_guard(spark, cfg)
+    if ok:
+        ok, reason = is_authorized(spark, cfg, roles)
     record_audit(spark, cfg, run_id, "authorize", "ALLOWED" if ok else "DENIED", reason)
     if not ok:
         raise PermissionError(reason)
@@ -322,6 +373,7 @@ def authorize(spark, cfg: DPOConfig, run_id: str = "", roles: tuple = ("admins",
 
 
 def record_audit(spark, cfg: DPOConfig, run_id: str, action: str, status: str, detail: str) -> None:
+    """Append one row to the append-only audit log. Never raises: auditing must not break a run."""
     try:
         row = [(current_user(spark, cfg), cfg.profile, cfg.source_mode, action, status, detail[:2000])]
         _write(spark, cfg, "audit_log", row, "principal string, profile string, source_mode string, "
@@ -384,6 +436,7 @@ def plan_table_ownership(spark, cfg: DPOConfig) -> list[Stmt]:
 
 
 def admin_plan(spark, cfg: DPOConfig) -> list[Stmt]:
+    """Everything an admin applies: security objects, grants, ownership, tags and reporting views."""
     stmts = plan_setup(cfg) + plan_security(cfg)
     if cfg.governance["apply_grants"] and cfg.catalog:
         grants = plan_grants(cfg)

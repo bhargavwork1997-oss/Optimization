@@ -1,22 +1,42 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 03 · Optimization Lab — prove the levers
-# MAGIC Before/after experiments on the built-in `samples.tpch` dataset, one per optimisation lever the rules
-# MAGIC recommend. Results go to `gold.lab_results` as evidence that a fix type works before it is proposed to a
-# MAGIC workload owner. Uses only public sample data: no client data is copied.
+# MAGIC # 03 · Optimization lab: prove the levers
+# MAGIC
+# MAGIC **Purpose.** Before a fix is proposed to a workload owner, show that the fix type works. Each experiment runs the
+# MAGIC same query before and after one optimisation lever on the public `samples.tpch` data, and records the timings in
+# MAGIC `gold.lab_results`. No client data is copied.
 # MAGIC
 # MAGIC | # | Lever | Rules it backs | Before | After |
 # MAGIC |---|---|---|---|---|
-# MAGIC | 1 | Clustering + sargable predicate | R11, R16 | unclustered table, `year(col)=X` | liquid clustering, range predicate |
+# MAGIC | 1 | Clustering + sargable predicate | R11, R16 | unclustered table, `year(col) = X` | liquid clustering, range predicate |
 # MAGIC | 2 | Column projection | R16 | `SELECT *` | needed columns only |
-# MAGIC | 3 | Broadcast small dimension | R12 | default join | `BROADCAST` hint |
+# MAGIC | 3 | Broadcast small dimension | R12 | default join | `BROADCAST` hint (same table, only the hint changes) |
 # MAGIC
-# MAGIC Timings on shared serverless compute are noisy: each query runs `runs` times and the median is kept.
-# MAGIC For client evidence also compare *files read / bytes read* in Query History → Query Profile (deterministic).
+# MAGIC | | |
+# MAGIC |---|---|
+# MAGIC | **Who runs it** | operators or admins (it creates tables); the installer runs it once |
+# MAGIC | **Reads** | `samples.tpch` (skipped if the workspace has no samples) |
+# MAGIC | **Writes** | temporary `lab_*` tables in the sim schema (dropped at the end), `gold.lab_results` (appended) |
+# MAGIC
+# MAGIC Timings on shared serverless compute are noisy: each query runs `runs` times (1–10) and the median is kept. For client
+# MAGIC evidence also compare *files read / bytes read* in Query History → Query Profile, which are deterministic.
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Shared bootstrap
+# MAGIC Loads the DPO package, detects the profile, creates the shared widgets and builds `cfg` (see `_common`).
 
 # COMMAND ----------
 
 # MAGIC %run ./_common
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### 1 · Set-up
+# MAGIC Authorises the caller (creates tables: operators/admins only), checks `samples.tpch` is available and defines the
+# MAGIC timing helpers.
 
 # COMMAND ----------
 
@@ -27,7 +47,7 @@ import time
 from dpo import governance
 
 dbutils.widgets.text("runs", "3", "Runs per query")
-RUNS = int(dbutils.widgets.get("runs"))
+RUNS = min(max(int(dbutils.widgets.get("runs")), 1), 10)   # bounded: each run scans ~6 M rows
 governance.authorize(spark, cfg, run_id="lab")           # creates tables: admins / operators only
 LAB = cfg.schema("sim")                                   # sandbox schema, never client data
 
@@ -61,6 +81,12 @@ def experiment(name, rules, before_sql, after_sql):
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ### 2 · Experiments
+# MAGIC Builds an unclustered and a liquid-clustered copy of `lineitem`, then runs the three before/after pairs.
+
+# COMMAND ----------
+
 spark.sql(f"CREATE OR REPLACE TABLE {LAB}.lab_lineitem_raw AS SELECT * FROM samples.tpch.lineitem")
 spark.sql(f"CREATE OR REPLACE TABLE {LAB}.lab_lineitem_opt CLUSTER BY (l_shipdate) AS SELECT * FROM samples.tpch.lineitem")
 spark.sql(f"OPTIMIZE {LAB}.lab_lineitem_opt")
@@ -86,12 +112,18 @@ experiment(
         JOIN samples.tpch.nation n   ON c.c_nationkey = n.n_nationkey
         GROUP BY 1""",
     f"""SELECT /*+ BROADCAST(n) */ n.n_name, SUM(l.l_extendedprice)
-        FROM {LAB}.lab_lineitem_opt l
+        FROM {LAB}.lab_lineitem_raw l
         JOIN samples.tpch.orders o   ON l.l_orderkey = o.o_orderkey
         JOIN samples.tpch.customer c ON o.o_custkey = c.c_custkey
         JOIN samples.tpch.nation n   ON c.c_nationkey = n.n_nationkey
         GROUP BY 1""",
 )
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### 3 · Record and clean up
+# MAGIC Appends the results to `gold.lab_results` and drops the temporary copies so no 6 M-row tables are left behind.
 
 # COMMAND ----------
 

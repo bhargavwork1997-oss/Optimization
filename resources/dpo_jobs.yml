@@ -4,7 +4,7 @@ resources:
   jobs:
     dpo_pipeline:
       name: dpo-pipeline-${var.profile}
-      description: Databricks Processing Optimization - ingest, attribute cost, diagnose, score, narrate
+      description: Databricks Processing Optimization - ingest, attribute cost, diagnose, score, narrate, forecast
       max_concurrent_runs: 1
       schedule:
         quartz_cron_expression: "0 30 6 * * ?"     # 06:30 IST daily
@@ -13,6 +13,7 @@ resources:
       parameters:
         - {name: profile, default: "${var.profile}"}
         - {name: catalog, default: "${var.catalog}"}
+        - {name: warehouse_id, default: "${var.warehouse_id}"}   # ai_forecast runs on this SQL warehouse
       tasks:
         - task_key: generate_synthetic              # exits immediately on system-table profiles
           notebook_task: {notebook_path: ../notebooks/01_generate_synthetic_data.py}
@@ -23,7 +24,7 @@ resources:
       tags: {app: dpo-accelerator, dpo_profile: "${var.profile}", cost_center: platform-finops}
 
     # One-time (and safe to re-run) installer: access gate -> setup -> first pipeline run -> views -> verify.
-    # Jobs and dashboards are left to the bundle (schedule=none, dashboards=no): the installer creates neither.
+    # Jobs, dashboards and Genie spaces are left to the bundle (schedule=none, dashboards=no, genie=no).
     dpo_install:
       name: dpo-install-${var.profile}
       max_concurrent_runs: 1
@@ -37,6 +38,7 @@ resources:
             base_parameters:
               schedule: none
               dashboards: "no"                      # the bundle deploys the dashboards
+              genie: "no"                           # ... and the Genie spaces
               include_lab: "yes"
               pipeline_run_as: ${var.service_principal}
               governance_run_as: ${var.admin_service_principal}

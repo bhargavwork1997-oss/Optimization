@@ -1,11 +1,35 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # 06 · Governance audit
-# MAGIC For security reviews: who can access DPO data, who ran it, and whether anything drifted from the role model.
+# MAGIC
+# MAGIC **Purpose.** Evidence for a security review: who can access DPO data, who ran DPO (and who was refused), who read
+# MAGIC it, whether grants drifted from the role model, and whether the audit log is intact. Read-only.
+# MAGIC
+# MAGIC | | |
+# MAGIC |---|---|
+# MAGIC | **Who runs it** | `dpo-admins` (sections 4 and 5 need admin rights; others show an error message instead of data) |
+# MAGIC | **When** | monthly review; before and after an access change; on request of security/compliance |
+# MAGIC | **Reads** | `SHOW GRANTS`, `ops.audit_log`, `system.access.audit`, `security.access_map`, audit-log table history |
+# MAGIC | **Writes** | nothing (drift is reported, not revoked, here) |
+# MAGIC
+# MAGIC Review checklist: remove leavers from the DPO groups · confirm every principal in section 1 is a DPO group ·
+# MAGIC investigate DENIED rows in section 3 and every `BLOCKER_ACCEPTED` · re-certify `security.access_map` rows ·
+# MAGIC confirm the audit-log history shows only WRITE/CREATE operations.
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Shared bootstrap
+# MAGIC Loads the DPO package, detects the profile, creates the shared widgets and builds `cfg` (see `_common`).
 
 # COMMAND ----------
 
 # MAGIC %run ./_common
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Imports
 
 # COMMAND ----------
 
@@ -14,7 +38,10 @@ from dpo.config import LAYERS
 
 # COMMAND ----------
 
-# MAGIC %md ### 1. Current grants on every DPO schema
+# MAGIC %md
+# MAGIC ### 1 · Current grants on every DPO schema
+# MAGIC Every principal and privilege per DPO schema. Expected: only the four DPO groups (and the service principals
+# MAGIC through them).
 
 # COMMAND ----------
 
@@ -30,7 +57,10 @@ display(spark.createDataFrame(rows, "schema_name string, principal string, privi
 
 # COMMAND ----------
 
-# MAGIC %md ### 2. Drift against the role model (read-only here; revocation happens in the pipeline if the profile allows)
+# MAGIC %md
+# MAGIC ### 2 · Drift against the role model
+# MAGIC Grants that exist but are not in the role model. Read-only here; the governance job revokes them in production
+# MAGIC (`revoke_drift`).
 
 # COMMAND ----------
 
@@ -39,7 +69,10 @@ display(spark.createDataFrame(governance.audit_drift(spark, cfg, "audit", revoke
 
 # COMMAND ----------
 
-# MAGIC %md ### 3. Who ran DPO, and who was refused
+# MAGIC %md
+# MAGIC ### 3 · Who ran DPO, and who was refused
+# MAGIC Latest 200 rows of the append-only audit log: authorisations (ALLOWED/DENIED), pipeline runs, installs and accepted
+# MAGIC blockers.
 
 # COMMAND ----------
 
@@ -50,8 +83,8 @@ display(spark.sql(f"""
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### 4. Who read DPO tables (Unity Catalog audit log)
-# MAGIC Needs `SELECT` on `system.access.audit` (account admins grant it).
+# MAGIC ### 4 · Who read DPO tables (Unity Catalog audit log)
+# MAGIC Reads of DPO objects in the last 30 days from `system.access.audit`. Needs SELECT on that table (account admins grant it).
 
 # COMMAND ----------
 
@@ -69,7 +102,9 @@ except Exception as e:
 
 # COMMAND ----------
 
-# MAGIC %md ### 5. Row-level access map (admins maintain this)
+# MAGIC %md
+# MAGIC ### 5 · Row-level access map
+# MAGIC Individual users granted extra cost centres on top of the group mapping in the profile. Re-certify monthly.
 
 # COMMAND ----------
 
@@ -79,9 +114,10 @@ display(spark.table(cfg.t("security", "access_map")))
 
 # COMMAND ----------
 
-# MAGIC %md ### 6. Audit-log integrity
-# MAGIC `ops.audit_log` is append-only (`delta.appendOnly`) and owned by admins. Any DELETE/UPDATE attempt fails;
-# MAGIC table history should show only WRITE/CREATE operations.
+# MAGIC %md
+# MAGIC ### 6 · Audit-log integrity
+# MAGIC `ops.audit_log` is append-only (`delta.appendOnly`) and owned by admins: DELETE/UPDATE fail. The table history should
+# MAGIC show only WRITE/CREATE operations.
 
 # COMMAND ----------
 

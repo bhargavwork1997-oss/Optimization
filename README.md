@@ -8,6 +8,19 @@ Levers covered: SQL optimisation and anti-patterns · data layout (pruning, smal
 right-sizing and auto-termination · job vs all-purpose compute · reliability and skew · cost spikes and
 regressions · tagging · replatforming plain file copies to native Azure compute.
 
+## Start here
+
+**Step-by-step guides for Free Edition, enterprise dev and production: [`docs/getting-started.md`](docs/getting-started.md).**
+
+| Document | For |
+|---|---|
+| `docs/getting-started.md` | installing and operating DPO in each environment |
+| `GOVERNANCE.md` | role model, controls, platform-admin set-up |
+| `docs/security-review.md` | security findings, fixes and residual risks |
+| `docs/ai-features.md` | AI narratives, spend forecast and budget outlook |
+| `docs/dashboard-guide.md` · `docs/genie-guide.md` | the dashboards and Genie spaces |
+| `docs/data-contract.md` | every table and column |
+
 ## Architecture
 
 ```
@@ -15,7 +28,8 @@ system.* tables  or  synthetic twins (dpo_sim)        <- profile.source_mode
         │
 bronze   column contracts, workspace scope, raw SQL minimised
 silver   DQ + quarantine, de-dup, SCD latest, contract/list pricing, SQL fingerprints
-gold     cost attribution (direct / allocated / idle), scorecards, 17 rules, scored backlog, narratives
+gold     cost attribution (direct / allocated / idle), scorecards, 17 rules, scored backlog,
+         AI narratives, spend forecast + budget outlook
 reporting  secured views: row-level by cost centre, salted identity hashing   (admin-owned)
 security   access map + identity salt                                          (admins only)
 ops        run log, DQ, rule status, append-only audit log, governance log
@@ -31,7 +45,7 @@ ops        run log, DQ, rule status, append-only audit log, governance log
 
 > Free Edition is non-commercial and has no access control: **never load client telemetry into it.**
 
-See `GOVERNANCE.md` and the threat model (build guide, section 12).
+See `GOVERNANCE.md` and `docs/security-review.md`.
 
 ## Deploy — Databricks Asset Bundles (recommended)
 
@@ -39,7 +53,7 @@ The bundle (`databricks.yml` + `resources/`) is the deployment unit: code, jobs,
 permissions per environment. Validated with `databricks bundle validate` for all three targets and against the
 CLI's schema in CI.
 
-| Target | Mode | Runs as | Jobs | Dashboards (warehouse lookup) |
+| Target | Mode | Runs as | Jobs | Dashboards + Genie spaces (warehouse lookup) |
 |---|---|---|---|---|
 | `dev` (Free Edition) | development | you | `dpo_pipeline`, `dpo_install`, `dpo_tests` | both · `Serverless Starter Warehouse` |
 | `enterprise_dev` | development | deployer | + `dpo_governance`; per-job group permissions | both · `dpo-sql`, group permissions |
@@ -67,7 +81,7 @@ access gate and steps as `dpo_install`; it also creates the scheduled jobs, unle
 this profile already exist (detected by tag), in which case it changes nothing. `mode = check_only` runs the
 gate alone.
 
-Day to day: `02_run_pipeline` (manual run), `06_governance_audit` (monthly), the dashboards.
+Day to day: `02_run_pipeline` (manual run), `06_governance_audit` (monthly), the dashboards and Genie spaces.
 
 ## Dashboards (as code)
 
@@ -76,7 +90,7 @@ Two AI/BI dashboards per profile, generated from the profile by `src/dpo/dashboa
 
 | Dashboard | Pages | Reads | Who |
 |---|---|---|---|
-| **DPO · Cost optimization** | Overview (KPIs, daily cost by product, cost by cost centre, findings and savings by category, top workloads) · Recommendations (scored backlog with evidence, narrative and action; value vs feasibility; score breakdown) | `reporting` views only | viewers, analysts, operators |
+| **DPO · Cost optimization** | Overview (KPIs, daily cost by product, cost by cost centre, findings and savings by category, top workloads) · Recommendations (scored backlog with evidence, narrative and action; value vs feasibility; score breakdown) · Budget & forecast (outlook per cost centre, actual vs forecast) | `reporting` views only | viewers, analysts, operators |
 | **DPO · Engineering** | Jobs & queries (reliability scorecard with R06 highlight, expensive query shapes) · Pipeline health (latest run, recent runs, sources, data quality, rule status) | gold, ops | analysts, operators |
 
 Both are published **without embedded credentials**, so each reader's own grants apply (row-level security,
@@ -84,6 +98,48 @@ hashed identities). Readers need **CAN_USE** on the SQL warehouse. To change a d
 `src/dpo/dashboard.py`, run `cd src && python -m dpo.dashboard`, commit the regenerated files and deploy;
 CI fails if the files are stale. Edits made in the UI are overwritten by the next deploy. Without the CLI,
 `00_install` publishes them too (widgets `dashboards`, `warehouse`). Details: `docs/dashboard-guide.md`.
+
+## Genie spaces (as code)
+
+Ask the backlog in plain language ("what are my top P1 recommendations?", "which jobs cost most per
+successful run?"). Two Genie spaces (Genie agents) per profile, generated by `src/dpo/genie.py` into
+`genie/<profile>/*.geniespace.json` and deployed by the bundle (`resources.genie_spaces`, CLI ≥ 1.3.0).
+
+| Genie space | Tables | Who |
+|---|---|---|
+| **DPO · Ask cost optimization** | the five `reporting` views; value sampling off on every column | viewers, analysts, operators |
+| **DPO · Ask engineering** | gold backlog, cost and query tables + ops pipeline health (no audit/security) | analysts, operators |
+
+Each space ships with instructions (scoring, priorities, "estimated" savings, rule ids, masking), six sample
+questions, six tested example queries, measures and the same six as benchmarks (run them from the space's
+**Benchmarks** tab after each deploy). Genie runs every query **as the person asking**, so the secured views
+filter rows exactly as in the dashboard. Change a space in `src/dpo/genie.py`, run `cd src && python -m dpo.genie`,
+commit and deploy (UI edits are overwritten). Without the CLI, `00_install` creates them (widget `genie`).
+Details: `docs/genie-guide.md`.
+
+## AI features
+
+| Feature | What it adds | Fallback |
+|---|---|---|
+| **AI narratives** (`ai_query`, Databricks-hosted LLM) | Root cause / Fix / Validation / Risk for the top 25 findings, labelled, validated and cached | template text |
+| **Spend forecast + budget outlook** (`ai_forecast` on the SQL warehouse) | daily forecast per cost centre to month-end, projected total vs the profile's `budgets`, status OVER_BUDGET / AT_RISK / WATCH / ON_TRACK | weekday-average baseline |
+| **Genie spaces** | plain-English questions over the backlog and the budget outlook | dashboards |
+
+Set monthly budgets per cost centre in the profile (`"budgets": {"cc-finance": 6000}`). Results: dashboard page
+**Budget & forecast**, `reporting.budget_outlook`, Genie. Details, configuration and controls: `docs/ai-features.md`.
+
+## What DPO itself costs
+
+DPO runs on Databricks, so its own processing is billed too, and it measures that from the same billing data:
+- **jobs**: DPO's jobs (pipeline, install, governance, tests), found by the `app=dpo-accelerator` tag or job name;
+- **sql**: SQL-warehouse cost of queries that read DPO schemas (dashboards, Genie, `ai_forecast`, ad hoc);
+- **tagged**: any other usage tagged `app=dpo-accelerator`.
+
+Results: `gold.dpo_cost_daily`, `gold.dpo_run_cost` (cost per DPO job run) and `gold.dpo_cost_summary` (cost per
+month, share of all spend, estimated savings found, **savings-to-cost ratio**). The Engineering dashboard has a
+**DPO's own cost** page, and you can ask the engineering Genie space "What does DPO itself cost?". Analysts and
+operators only, because the summary includes account-wide totals. On the synthetic data DPO costs about 0.14% of
+spend, against estimated savings about 170× its cost.
 
 ## Local tests (no Databricks)
 
@@ -97,12 +153,15 @@ pytest -q -m slow                      # 5x volume
 
 ```
 config/       rules.json (17 rules) · environments/*.json (profiles)
-src/dpo/      config · governance · installer · transforms · synth · pipeline · rules · recommend · validation · dashboard
+src/dpo/      config · governance · installer · transforms · synth · pipeline · rules · recommend · forecast · selfcost · validation
+              dashboard · genie
 notebooks/    00_install · 00_setup · 01_generate_synthetic_data · 02_run_pipeline · 03_optimization_lab
               04_regression_tests · 05_stress_tests · 06_governance_audit · _common
 dashboards/   <profile>/cost_optimization.lvdash.json · <profile>/engineering.lvdash.json (generated)
-docs/         data-contract.md · dashboard-guide.md · ado-backlog.md
-resources/    dpo_jobs.yml          databricks.yml (targets dev / enterprise_dev / enterprise_prod, dashboards)
+genie/        <profile>/cost_optimization.geniespace.json · <profile>/engineering.geniespace.json (generated)
+docs/         getting-started.md · security-review.md · ai-features.md · data-contract.md
+              dashboard-guide.md · genie-guide.md · ado-backlog.md
+resources/    dpo_jobs.yml          databricks.yml (targets dev / enterprise_dev / enterprise_prod, dashboards, genie spaces)
 tests/        pytest suites (incl. test_bundle.py) + golden/small_seed42.json
 GOVERNANCE.md · .github/ (CI with bundle-schema check, deploy workflow, CODEOWNERS)
 ```

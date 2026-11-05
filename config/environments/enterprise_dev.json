@@ -26,7 +26,10 @@
     "ai_allow_external": false,
     "operators_can_create_schemas": true
   },
-  "ai_enabled": false,
+  "ai_enabled": true,
   "contract_prices": {},
-  "workspace_hosts": []
+  "workspace_hosts": [],
+  "ai_max_rows": 25,
+  "budgets": {},
+  "forecast_method": "ai_forecast"
 }

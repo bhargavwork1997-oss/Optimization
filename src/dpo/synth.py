@@ -1,7 +1,7 @@
 """Synthetic telemetry generator.
 
 Produces tables whose names and columns mirror Databricks system tables, with
-15 injected anomaly scenarios plus healthy CONTROL workloads and a labelled
+17 injected anomaly scenarios (one per rule) plus healthy CONTROL workloads and a labelled
 ground-truth table.  Facts are generated with Spark (not Python loops), and all
 randomness comes from xxhash64, so:
   * scale goes from a few thousand rows ("small") to tens of millions ("xl")
@@ -98,7 +98,7 @@ def _dims(mult: int) -> dict:
         return cid
 
     def add_job(scn, compute="job_cluster", workers=4, cpu=62.0, mem=55.0, dbr=GOOD_DBR,
-                rpd=4, base=20.0, tasks=4, tagged=True, host=None):
+                rpd=4, base=20.0, tasks=4, tagged=True, host=None, name=None):
         jid = str(500000 + len(jobs))
         team = TEAMS[len(jobs) % len(TEAMS)]
         cid = None
@@ -106,7 +106,7 @@ def _dims(mult: int) -> dict:
             cid = add_cluster(scn, "JOB", workers, None, dbr, cpu, mem, 0, tagged)
         elif compute == "all_purpose":
             cid = host
-        jobs.append((jid, f"{team}_{scn.lower()}_{jid}", scn, compute, cid, workers, cpu, mem,
+        jobs.append((jid, name or f"{team}_{scn.lower()}_{jid}", scn, compute, cid, workers, cpu, mem,
                      rpd, base, tasks, tagged, team, owner(len(jobs))))
         truth.append(("job", f"job:{jid}", scn, SCENARIO_RULE.get(scn)))
         return jid
@@ -178,6 +178,12 @@ def _dims(mult: int) -> dict:
             add_tpl("CONTROL", wh_ok)
         for k in range(4):
             add_table("CONTROL", 120 + 40 * k, (12 + 4 * k) * 1024**3)
+
+    # --- DPO's own footprint (healthy): its daily job and dashboard/Genie queries on DPO views ----
+    # Real deployments are found the same way: job name / app tag, and SQL that reads DPO schemas.
+    add_job("CONTROL", compute="serverless", rpd=1, base=8.0, tasks=2, name="dpo-pipeline-synthetic")
+    add_tpl("CONTROL", whs[0][0], execs=12, base=900.0, rb=8 * 1024**2, rf=2, pf=0, cache=0.6, literal=False,
+            text="SELECT priority, count(*) AS findings FROM {dpo_reporting}.recommendations GROUP BY priority")
 
     # query truth uses the same fingerprint function the pipeline uses
     return {"jobs": jobs, "clusters": clusters, "warehouses": whs, "templates": tpls,
@@ -316,7 +322,7 @@ def _usage(runs, ap_hours, wh_hours) -> DataFrame:
     return out
 
 
-def _queries(tpls: DataFrame, days: DataFrame, t0: int) -> DataFrame:
+def _queries(tpls: DataFrame, days: DataFrame, t0: int, dpo_reporting: str = "dpo_reporting") -> DataFrame:
     q = (tpls.crossJoin(days)
          .withColumn("n", F.explode(F.sequence(F.lit(0), F.col("execs_per_day") - 1))))
     k = [F.col("template_id"), F.col("d"), F.col("n")]
@@ -327,7 +333,8 @@ def _queries(tpls: DataFrame, days: DataFrame, t0: int) -> DataFrame:
     start = F.lit(t0) + F.col("d") * 86400 + 8 * 3600 + unit_hash(*k, salt=23) * 36000
     spilled = unit_hash(*k, salt=24) < F.col("spill_share")
     day_str = F.date_format(F.to_date(_ts(F.lit(t0) + F.col("d") * 86400)), "yyyy-MM-dd")
-    text = F.regexp_replace(F.col("statement_template"), r"\{date\}", day_str)
+    text = F.regexp_replace(F.regexp_replace(F.col("statement_template"), r"\{date\}", day_str),
+                            r"\{dpo_reporting\}", dpo_reporting)
     total = exec_ms + wait + 200
     return q.select(
         F.lit(ACCOUNT).alias("account_id"), F.lit(WORKSPACE).alias("workspace_id"),
@@ -462,7 +469,7 @@ def generate(spark: SparkSession, cfg: DPOConfig, scale: str = "small", seed: in
         "jobs": jobs_tbl.unionByName(stale_job),
         "job_run_timeline": _job_run_timeline(runs),
         "job_task_run_timeline": _task_run_timeline(runs),
-        "query_history": _queries(tpls, days, t0),
+        "query_history": _queries(tpls, days, t0, cfg.schema("reporting")),
         "clusters": clusters_tbl.unionByName(stale_cluster),
         "node_timeline": _node_timeline(runs, ap_hours),
         "table_inventory": tables.select(

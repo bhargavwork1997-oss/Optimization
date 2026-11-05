@@ -24,7 +24,8 @@ def test_all_profiles_load_and_validate():
     free, prod = DPOConfig.from_profile("free_edition"), DPOConfig.from_profile("enterprise_prod")
     assert free.schema("gold") == "workspace.dpo_gold" and not free.governance["enforce"]
     assert prod.schema("gold") == "dpo.gold" and prod.governance["enforce"] and prod.source_mode == "system"
-    assert not prod.ai_enabled and not prod.governance["retain_raw_sql"]
+    # AI is on in enterprise, but only to Databricks-hosted models (see test_ai_features.py)
+    assert not prod.governance["ai_allow_external"] and not prod.governance["retain_raw_sql"]
 
 
 def test_profile_overrides_and_errors():
@@ -163,7 +164,8 @@ def _views(spark, cfg):
 
 def test_viewer_sees_only_own_cost_center(spark, gov):
     _views(spark, _as(gov, ["finance-cost-owners"]))
-    for v in ("recommendations", "workload_summary", "cost_by_dimension", "job_scorecard"):
+    for v in ("recommendations", "workload_summary", "cost_by_dimension", "job_scorecard", "budget_outlook",
+              "cost_forecast"):
         ccs = {r[0] for r in spark.table(f"gov_reporting.{v}").select("cost_center").distinct().collect()}
         assert ccs == {"cc-finance"}, (v, ccs)
 
@@ -198,6 +200,7 @@ def test_unmapped_viewer_sees_nothing(spark, gov):
     _views(spark, _as(gov, [VIEW], cc_groups={}))
     assert spark.table("gov_reporting.recommendations").count() == 0
     assert spark.table("gov_reporting.cost_by_dimension").count() == 0
+    assert spark.table("gov_reporting.budget_outlook").count() == 0
 
 
 def test_analyst_sees_everything_unmasked(spark, gov):
@@ -276,3 +279,60 @@ def test_workspace_scoping_contract_and_discount_pricing(spark, gov):
     ap = u.filter("sku_name LIKE '%ALL_PURPOSE%'").select("unit_price", "price_source").distinct().collect()
     assert [(r.unit_price, r.price_source) for r in ap] == [(0.40, "contract")]
     assert u.filter("sku_name NOT LIKE '%ALL_PURPOSE%' AND price_source <> 'list'").count() == 0
+
+
+# ------------------------------------------------------------- runtime guard --
+def test_pipeline_refuses_real_telemetry_with_governance_off(spark, gov):
+    """An operator re-running the job with profile=free_edition, source_mode=system must not copy real
+    system tables into an ungoverned schema. Checked on every run, not only at install."""
+    from dpo import pipeline
+    cfg = local_cfg(prefix="gov_", source_mode="system")
+    with pytest.raises(PermissionError, match="governance.enforce = false"):
+        pipeline.run_all(spark, cfg, stages=("bronze",), run_id="guard-sys")
+    rows = spark.table("gov_ops.audit_log").filter("run_id = 'guard-sys'").collect()
+    assert [(r.action, r.status) for r in rows] == [("authorize", "DENIED")]
+
+
+def test_pipeline_refuses_profile_bound_to_another_workspace(spark, gov):
+    from dpo import pipeline
+    cfg = local_cfg(prefix="gov_", workspace_hosts=["adb-111.11.azuredatabricks.net"])
+    spark.conf.set("spark.databricks.workspaceUrl", "adb-222.22.azuredatabricks.net")
+    try:
+        with pytest.raises(PermissionError, match="bound to"):
+            pipeline.run_all(spark, cfg, stages=("bronze",), run_id="guard-host")
+        spark.conf.set("spark.databricks.workspaceUrl", "adb-111.11.azuredatabricks.net")
+        pipeline.run_all(spark, cfg, stages=("bronze",), run_id="guard-ok")
+    finally:
+        spark.conf.unset("spark.databricks.workspaceUrl")
+
+
+def test_config_rejects_unsafe_runtime_values():
+    from dpo.config import DPOConfig
+    for bad in ({"lookback_days": 5000}, {"end_date": "2026-10-27' OR 1=1"}, {"end_date": "27/10/2026"}):
+        with pytest.raises(ValueError):
+            DPOConfig(catalog=None, **bad).validate()
+
+
+def test_enforced_run_cannot_be_redirected_to_another_catalog():
+    """'Run now' with catalog=<a catalog everyone can read> must not move results out of the governed catalog."""
+    from dpo.config import DPOConfig
+    from dpo.governance import runtime_guard
+
+    class NoConf:
+        class conf:
+            @staticmethod
+            def get(*a):
+                raise RuntimeError("local")
+    assert runtime_guard(NoConf, DPOConfig.from_profile("enterprise_prod"))[0]
+    moved = DPOConfig.from_profile("enterprise_prod", {"catalog": "main"})
+    ok, why = runtime_guard(NoConf, moved)
+    assert not ok and "allowed_catalogs" in why
+    moved.governance["allowed_catalogs"] = ["main"]
+    assert runtime_guard(NoConf, moved)[0]
+
+
+def test_profile_name_cannot_be_a_path():
+    from dpo.config import DPOConfig
+    for bad in ("../../etc/x", "enterprise_prod/../free_edition", "Prod Profile"):
+        with pytest.raises(ValueError, match="illegal profile name"):
+            DPOConfig.from_profile(bad)

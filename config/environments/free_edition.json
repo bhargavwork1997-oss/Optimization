@@ -14,5 +14,12 @@
   "ai_enabled": true,
   "workspace_hosts": [
     "dbc-858dc22a-1203.cloud.databricks.com"
-  ]
+  ],
+  "budgets": {
+    "cc-finance": 4300,
+    "cc-sales": 8000,
+    "cc-hr": 440,
+    "cc-marketing": 20
+  },
+  "forecast_method": "ai_forecast"
 }

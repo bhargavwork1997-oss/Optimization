@@ -21,6 +21,7 @@ OUT_COLS = ["workload_key", "metric_name", "metric_value", "threshold", "est_mon
 
 
 def rule(rule_id: str):
+    """Register a rule function under its id in config/rules.json (metadata and thresholds live there)."""
     def deco(fn):
         RULES[rule_id] = fn
         return fn
@@ -74,6 +75,7 @@ def _owner_key(ctx, clusters: DataFrame) -> DataFrame:
 # ---------------------------------------------------------------- compute ----
 @rule("R01_COMPUTE_IDLE")
 def r01(ctx, th):
+    """R01: all-purpose cluster mostly idle (low average CPU, many hours up). Saving: up to 80% of its cost."""
     c = ctx.read("silver", "clusters").filter("is_all_purpose")
     df = c.join(_cluster_util(ctx), "cluster_id").join(_cluster_monthly(ctx), "cluster_id")
     df = df.filter((F.col("avg_cpu") < th["max_avg_cpu_pct"]) &
@@ -87,6 +89,7 @@ def r01(ctx, th):
 
 @rule("R02_COMPUTE_OVERSIZED")
 def r02(ctx, th):
+    """R02: job cluster with many workers but low CPU and memory. Saving: share of the job cost above target use."""
     c = ctx.read("silver", "clusters").filter(~F.col("is_all_purpose"))
     df = (c.filter(F.coalesce("max_autoscale_workers", "worker_count") >= th["min_workers"])
           .join(_cluster_util(ctx), "cluster_id")
@@ -101,6 +104,8 @@ def r02(ctx, th):
 
 @rule("R03_COMPUTE_AUTOTERMINATION")
 def r03(ctx, th):
+    """R03: all-purpose cluster without auto-termination, or with a very long one. Saving: fixed share of its cost.
+    """
     c = ctx.read("silver", "clusters").filter("is_all_purpose")
     df = c.join(_cluster_monthly(ctx), "cluster_id").filter(
         F.col("auto_termination_minutes").isNull() | (F.col("auto_termination_minutes") == 0) |
@@ -113,6 +118,7 @@ def r03(ctx, th):
 
 @rule("R04_COMPUTE_OLD_RUNTIME")
 def r04(ctx, th):
+    """R04: cluster on an old Databricks Runtime major version (slower, unsupported). Saving: fixed share."""
     c = ctx.read("silver", "clusters").filter(F.col("dbr_major") < th["min_dbr_major"])
     df = _owner_key(ctx, c.join(_cluster_monthly(ctx), "cluster_id"))
     return _out(df, F.col("workload_key"), "dbr_major", F.col("dbr_major"), th["min_dbr_major"],
@@ -123,6 +129,7 @@ def r04(ctx, th):
 # ------------------------------------------------------------------- jobs ----
 @rule("R05_JOB_ON_ALL_PURPOSE")
 def r05(ctx, th):
+    """R05: scheduled job running on all-purpose compute (job compute is cheaper per DBU). Saving: fixed share."""
     runs = ctx.read("silver", "job_runs")
     ap = ctx.read("silver", "clusters").filter("is_all_purpose").select("cluster_id").distinct()
     on_ap = (runs.select("job_id", "run_id", F.explode("compute_ids").alias("cluster_id"))
@@ -138,6 +145,7 @@ def r05(ctx, th):
 
 @rule("R06_JOB_FAILURE_RATE")
 def r06(ctx, th):
+    """R06: job with a high failure rate. Saving: monthly cost of the failed runs (wasted compute)."""
     sc = ctx.read("gold", "job_scorecard")
     runs, rc = ctx.read("silver", "job_runs"), ctx.read("gold", "run_cost")
     failed_cost = (runs.filter("is_failure").join(rc.select(F.col("job_run_id").alias("run_id"), "cost"),
@@ -153,6 +161,7 @@ def r06(ctx, th):
 
 @rule("R07_TASK_SKEW")
 def r07(ctx, th):
+    """R07: tasks within a run are skewed (slowest task much slower than the median). Saving: fixed share."""
     t = ctx.read("silver", "task_runs")
     per_run = (t.groupBy("job_id", "job_run_id")
                .agg(F.count(F.lit(1)).alias("n_tasks"), F.max("duration_s").alias("max_s"),
@@ -173,6 +182,7 @@ def r07(ctx, th):
 
 @rule("R08_RUNTIME_REGRESSION")
 def r08(ctx, th):
+    """R08: recent median runtime of a job is well above its earlier median. Saving: the extra recent cost."""
     cut = ctx.end_date - dt.timedelta(days=th["recent_days"])
     r = ctx.read("silver", "job_runs").filter("is_success").withColumn("recent", F.col("run_date") > F.lit(cut))
     m = (r.groupBy("job_id", "job_name")
@@ -195,6 +205,7 @@ def r08(ctx, th):
 
 @rule("R09_COST_SPIKE")
 def r09(ctx, th):
+    """R09: recent daily cost of a workload well above its baseline median. Saving: the excess, per month."""
     cut = ctx.end_date - dt.timedelta(days=th["recent_days"])
     d = (ctx.read("gold", "workload_cost_daily").filter(F.col("workload_type") != "unattributed")
          .groupBy("workload_key", "usage_date").agg(F.sum("cost").alias("cost"))
@@ -213,6 +224,7 @@ def r09(ctx, th):
 
 @rule("R10_UNTAGGED_SPEND")
 def r10(ctx, th):
+    """R10: spend without the cost-centre tag (cannot be charged back). No saving estimate: governance value."""
     s = ctx.read("gold", "workload_summary").filter(~F.col("workload_type").isin("unattributed"))
     df = (s.withColumn("untagged_share", safe_div(F.col("untagged_cost"), F.col("window_cost")))
           .filter((F.col("untagged_share") >= th["min_untagged_share"]) &
@@ -229,6 +241,7 @@ def _fp(ctx):
 
 @rule("R11_SQL_NO_PRUNING")
 def r11(ctx, th):
+    """R11: repeated queries that read many files and prune almost none (missing clustering or filters)."""
     f = _fp(ctx).withColumn("prune_ratio", safe_div(F.col("avg_pruned_files"),
                                                     F.col("avg_read_files") + F.col("avg_pruned_files")))
     df = f.filter((F.col("executions") >= th["min_executions"]) &
@@ -245,6 +258,7 @@ def r11(ctx, th):
 
 @rule("R12_SQL_SPILL")
 def r12(ctx, th):
+    """R12: queries that often spill more than 1 GB to disk (undersized warehouse or bad join/aggregation)."""
     df = _fp(ctx).filter((F.col("executions") >= th["min_executions"]) &
                          (F.col("spill_share") >= th["min_spill_share"]))
     return _out(df, F.concat(F.lit("query:"), "fingerprint"), "share_executions_spilling_1gb",
@@ -256,6 +270,7 @@ def r12(ctx, th):
 
 @rule("R13_SQL_REPEATED_NO_CACHE")
 def r13(ctx, th):
+    """R13: the same query shape runs many times a day with a low result-cache hit rate."""
     df = (_fp(ctx).withColumn("per_day", safe_div(F.col("executions").cast("double"),
                                                   F.col("active_days").cast("double")))
           .filter((F.col("per_day") >= th["min_executions_per_day"]) &
@@ -268,6 +283,7 @@ def r13(ctx, th):
 
 @rule("R14_WAREHOUSE_QUEUING")
 def r14(ctx, th):
+    """R14: SQL warehouse where many queries wait at capacity (queuing). No saving estimate: performance value."""
     q = ctx.read("silver", "queries").filter(F.col("warehouse_id").isNotNull())
     df = (q.groupBy("warehouse_id")
           .agg(F.count(F.lit(1)).alias("queries"),
@@ -281,6 +297,7 @@ def r14(ctx, th):
 
 @rule("R15_TABLE_SMALL_FILES")
 def r15(ctx, th):
+    """R15: Delta table with many small files (slow reads; needs OPTIMIZE or auto-compaction)."""
     df = ctx.read("silver", "table_layout").filter(
         (F.col("num_files") >= th["min_files"]) & (F.col("avg_file_mb") < th["max_avg_file_mb"]))
     return _out(df, F.concat(F.lit("table:"), "fqn"), "avg_file_mb", F.col("avg_file_mb"),
@@ -305,16 +322,21 @@ def _pattern_rule(ctx, th, metric):
 
 @rule("R16_SQL_ANTI_PATTERN")
 def r16(ctx, th):
+    """R16: SQL anti-patterns in recurring queries (patterns in rules.json, e.g. SELECT *, functions on filters)."""
     return _pattern_rule(ctx, th, "anti_patterns_found")
 
 
 @rule("R17_REPLATFORM_CANDIDATE")
 def r17(ctx, th):
+    """R17: recurring plain file copies that native cloud copy tools would do cheaper than Spark."""
     return _pattern_rule(ctx, th, "file_copy_patterns_found")
 
 
 # ------------------------------------------------------------------ engine ---
 def run_rules(ctx) -> dict:
+    """Run every enabled rule; one failing rule is recorded as ERROR in ops.rule_status and never stops
+    the others. Joins rule metadata and writes gold.findings.
+    """
     meta = ctx.cfg.rules()
     parts, status = [], []
     for rid, m in meta.items():

@@ -1,5 +1,9 @@
 """Bronze -> Silver -> Gold pipeline.
 
+Stages (DEFAULT_STAGES): bronze, silver, gold, rules (rules.py), recommend + narrate (recommend.py),
+forecast (forecast.py), self_cost (selfcost.py: what DPO itself costs), govern (governance.run_govern:
+rebuild views when allowed, check drift).
+
 Every stage is a full, deterministic recompute of the look-back window, so a
 re-run produces identical tables (idempotent) and a failed run is fixed by
 simply running again.
@@ -8,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import time
 import uuid
 from typing import Callable
@@ -18,6 +23,27 @@ from pyspark.sql import functions as F
 from .config import LAYERS, DPOConfig
 from .transforms import (project, query_fingerprint, normalize_sql, safe_div, split_valid,
                          workload_key, workload_type)
+
+# ---------------------------------------------------------------------------
+# DPO's own footprint: how its jobs and queries are recognised in billing and query history
+# ---------------------------------------------------------------------------
+DPO_JOB_NAME = r"^(\[dev [^\]]+\] )?dpo-(pipeline|install|governance|tests)-"
+
+
+def is_dpo_job(name, tags):
+    """Jobs deployed by DPO: tagged app=dpo-accelerator (bundle and installer), or named like them."""
+    tagged = F.coalesce(F.try_element_at(tags, F.lit("app")) == "dpo-accelerator", F.lit(False))
+    return tagged | F.coalesce(name.rlike(DPO_JOB_NAME), F.lit(False))
+
+
+def dpo_schema_pattern(cfg: DPOConfig) -> str:
+    """Regex for any DPO schema in lower-cased SQL, quoted or not (identifiers are allow-listed)."""
+    alts = []
+    for layer in LAYERS:
+        parts = cfg.schema(layer).lower().split(".")
+        alts.append(r"\.".join(rf"`?{re.escape(p)}`?" for p in parts))
+    return r"(^|[^a-z0-9_])(" + "|".join(alts) + r")\."
+
 
 # ---------------------------------------------------------------------------
 # Bronze column contracts.  Same contract for system tables and sim twins.
@@ -142,17 +168,21 @@ class Ctx:
             pass
 
     def t(self, layer, name):
+        """Fully qualified table name for a layer."""
         return self.cfg.t(layer, name)
 
     def read(self, layer, name) -> DataFrame:
+        """Read a DPO table."""
         return self.spark.table(self.t(layer, name))
 
     def save(self, df: DataFrame, layer: str, name: str) -> int:
+        """Overwrite a DPO table (schema may change) and return its row count."""
         (df.write.format(self.cfg.table_format).mode("overwrite")
            .option("overwriteSchema", "true").saveAsTable(self.t(layer, name)))
         return self.spark.table(self.t(layer, name)).count()
 
     def exists(self, full_name: str) -> bool:
+        """True if the table exists and is readable by the caller."""
         try:
             self.spark.table(full_name).limit(0).collect()
             return True
@@ -205,7 +235,8 @@ def collect_table_inventory(ctx: Ctx) -> DataFrame | None:
             f"WHERE table_schema <> 'information_schema' AND table_type IN ('MANAGED','EXTERNAL') "
             f"LIMIT {int(ctx.cfg.inventory_max_tables)}").collect()
         for r in names:
-            fqn = f"`{r.table_catalog}`.`{r.table_schema}`.`{r.table_name}`"
+            # names come from metadata anyone with CREATE TABLE controls: escape backticks
+            fqn = ".".join(f"`{str(x).replace('`', '``')}`" for x in (r.table_catalog, r.table_schema, r.table_name))
             try:
                 d = spark.sql(f"DESCRIBE DETAIL {fqn}").collect()[0].asDict()
             except Exception:
@@ -224,6 +255,9 @@ def collect_table_inventory(ctx: Ctx) -> DataFrame | None:
 
 
 def run_bronze(ctx: Ctx) -> dict:
+    """Bronze: read each source (system table or synthetic twin) for the window, keep only the contract
+    columns, scope to approved workspaces, and strip comments/literals from SQL text (raw SQL is never stored).
+    """
     status_rows, counts = [], {}
     for name, spec in SPECS.items():
         src = ctx.cfg.source(name)
@@ -273,6 +307,9 @@ def _latest(df: DataFrame, key: str, order: str) -> DataFrame:
 
 
 def run_silver(ctx: Ctx) -> dict:
+    """Silver: data quality (invalid rows to quarantine), de-duplication, latest version of slowly changing
+    entities (clusters, jobs), list/contract pricing, SQL fingerprints. One dq_report row per source.
+    """
     cfg, b = ctx.cfg, lambda n: ctx.read("bronze", n)
     quarantine, dq, counts = [], [], {}
 
@@ -325,6 +362,7 @@ def run_silver(ctx: Ctx) -> dict:
         "currency_code",
         "job_id", "job_run_id", "cluster_id", "warehouse_id", "notebook_id", "dlt_pipeline_id",
         "run_as", tag.alias("cost_center"), tag.isNotNull().alias("is_tagged"),
+        F.expr("try_element_at(custom_tags, 'app')").alias("app_tag"),     # 'dpo-accelerator' = DPO's own usage
         wk.alias("workload_key"), workload_type(wk).alias("workload_type"),
         ((F.unix_timestamp("usage_end_time") - F.unix_timestamp("usage_start_time")) / 3600.0)
         .alias("usage_hours"))
@@ -335,7 +373,8 @@ def run_silver(ctx: Ctx) -> dict:
     jobs = _latest(b("jobs").filter(F.col("job_id").isNotNull()), "job_id", "change_time") \
         .filter(F.col("delete_time").isNull()) \
         .select("job_id", F.col("name").alias("job_name"), "creator_id", "run_as",
-                F.expr(f"try_element_at(tags, '{cfg.cost_center_tag}')").alias("cost_center"))
+                F.expr(f"try_element_at(tags, '{cfg.cost_center_tag}')").alias("cost_center"),
+                is_dpo_job(F.col("name"), F.col("tags")).alias("is_dpo"))
     counts["jobs"] = ctx.save(jobs, "silver", "jobs")
 
     # ---- job runs (timeline slices -> one row per run) ------------------------
@@ -415,7 +454,10 @@ def run_silver(ctx: Ctx) -> dict:
         "pruned_files", "spilled_local_bytes", "shuffle_read_bytes", "from_result_cache", "start_time",
         F.to_date("start_time").alias("query_date"),
         query_fingerprint(F.col("statement_text")).alias("fingerprint"),
-        F.substring(normalize_sql(F.col("statement_text")), 1, 300).alias("statement_shape"))
+        F.substring(normalize_sql(F.col("statement_text")), 1, 300).alias("statement_shape"),
+        "client_application",
+        # on the full text, not the 300-char shape: dashboard queries name their tables late
+        normalize_sql(F.col("statement_text")).rlike(dpo_schema_pattern(cfg)).alias("reads_dpo"))
     dq_track("query_history", raw, valid, invalid, queries)
     counts["queries"] = ctx.save(queries, "silver", "queries")
 
@@ -454,7 +496,22 @@ def _workload_cost_center(ctx: Ctx, usage: DataFrame, clusters: DataFrame) -> Da
     return u.groupBy("workload_key").agg(F.max("cost_center").alias("cost_center"))
 
 
+def query_costs(q: DataFrame, daily: DataFrame) -> DataFrame:
+    """Per-query cost: each warehouse-day's cost spread over its queries by task time (`query_cost`)."""
+    wh_day = (daily.filter(F.col("workload_type") == "warehouse")
+              .select(F.expr("substring(workload_key, 11)").alias("warehouse_id"),
+                      F.col("usage_date").alias("query_date"), "cost"))
+    wt = F.coalesce(F.col("total_task_duration_ms"), F.col("total_duration_ms"), F.lit(0)).cast("double")
+    qw = q.withColumn("wt", wt)
+    qtot = qw.groupBy("warehouse_id", "query_date").agg(F.sum("wt").alias("wt_tot"))
+    return (qw.join(qtot, ["warehouse_id", "query_date"], "left").join(wh_day, ["warehouse_id", "query_date"], "left")
+            .withColumn("query_cost", F.coalesce(F.col("cost") * safe_div(F.col("wt"), F.col("wt_tot")), F.lit(0.0))))
+
+
 def run_gold(ctx: Ctx) -> dict:
+    """Gold: cost per run, all-purpose cost allocated to the jobs that used it (rest = idle), workload summary,
+    job scorecard, query cost by fingerprint, and cost by dimension for dashboards.
+    """
     s = lambda n: ctx.read("silver", n)
     usage, runs, clusters = s("usage_cost"), s("job_runs"), s("clusters")
     counts = {}
@@ -532,15 +589,7 @@ def run_gold(ctx: Ctx) -> dict:
     counts["job_scorecard"] = ctx.save(sc, "gold", "job_scorecard")
 
     # ---- 5. query cost: warehouse-day cost spread by task time -----------------
-    q = s("queries")
-    wh_day = (daily.filter(F.col("workload_type") == "warehouse")
-              .select(F.expr("substring(workload_key, 11)").alias("warehouse_id"),
-                      F.col("usage_date").alias("query_date"), "cost"))
-    wt = F.coalesce(F.col("total_task_duration_ms"), F.col("total_duration_ms"), F.lit(0)).cast("double")
-    qw = q.withColumn("wt", wt)
-    qtot = qw.groupBy("warehouse_id", "query_date").agg(F.sum("wt").alias("wt_tot"))
-    qcost = (qw.join(qtot, ["warehouse_id", "query_date"], "left").join(wh_day, ["warehouse_id", "query_date"], "left")
-             .withColumn("query_cost", F.coalesce(F.col("cost") * safe_div(F.col("wt"), F.col("wt_tot")), F.lit(0.0))))
+    qcost = query_costs(s("queries"), daily)
     fp = (qcost.groupBy("fingerprint")
           .agg(F.min("statement_shape").alias("statement_shape"),
                F.array_sort(F.collect_set("warehouse_id")).alias("warehouse_ids"),
@@ -567,25 +616,33 @@ def run_gold(ctx: Ctx) -> dict:
 # ===========================================================================
 # Orchestration
 # ===========================================================================
-DEFAULT_STAGES = ("bronze", "silver", "gold", "rules", "recommend", "narrate", "govern")
+DEFAULT_STAGES = ("bronze", "silver", "gold", "rules", "recommend", "narrate", "forecast", "self_cost", "govern")
 
 
 def run_all(spark: SparkSession, cfg: DPOConfig, stages: tuple = DEFAULT_STAGES,
             run_id: str | None = None) -> Ctx:
+    """Run the given stages in order after the runtime guard and the authorization check. Every decision and
+    the run outcome go to the append-only audit log; stage timings go to ops.run_log.
+    """
     from . import governance
+    from .forecast import run_forecast
+    from .selfcost import run_self_cost
     from .recommend import run_narratives, run_recommendations
     from .rules import run_rules
 
     ctx = Ctx(spark, cfg, run_id)
-    # 1. who is asking? Refuse before reading or writing any data.
-    ok, reason = governance.is_authorized(spark, cfg)
+    # 1. right workspace, safe profile, and who is asking? Refuse before reading or writing any data.
+    ok, reason = governance.runtime_guard(spark, cfg)
+    if ok:
+        ok, reason = governance.is_authorized(spark, cfg)
     if not ok:
         governance.record_audit(spark, cfg, ctx.run_id, "authorize", "DENIED", reason)
         raise PermissionError(reason)
     ensure_schemas(ctx)
     governance.record_audit(spark, cfg, ctx.run_id, "authorize", "ALLOWED", reason)
     table = {"bronze": run_bronze, "silver": run_silver, "gold": run_gold, "rules": run_rules,
-             "recommend": run_recommendations, "narrate": run_narratives,
+             "recommend": run_recommendations, "narrate": run_narratives, "forecast": run_forecast,
+             "self_cost": run_self_cost,
              "govern": governance.run_govern}
     status = "FAILED"
     try:

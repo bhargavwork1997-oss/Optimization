@@ -5,14 +5,18 @@ The access gate runs first and changes nothing. If any BLOCKER is found it raise
 
 Plan (dependencies decide order; independent steps run in parallel):
 
-    gate ─► governance_base ─┬─► synthetic_data* ─► pipeline ─► viewer_layer ─► verify ─► schedule_jobs
-                             ├─► optimization_lab (optional, parallel)
-                             └─► regression_tests (optional, dev profiles only, parallel)
+    gate ─► governance_base ─┬─► synthetic_data* ─► pipeline ─► viewer_layer ─► verify ─┬─► schedule_jobs
+                             ├─► optimization_lab (optional, parallel)                   ├─► dashboards (optional)
+                             └─► regression_tests (optional, dev profiles only, parallel) └─► genie (optional)
     * only for synthetic profiles
+
+The gate also checks AI readiness (model endpoint, Pro/serverless SQL warehouse) as warnings only: both AI
+features fall back to non-AI output, so they never block an install.
 """
 from __future__ import annotations
 
 import json
+import re
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -99,6 +103,7 @@ def check_operator_system_access(spark, cfg: DPOConfig) -> list[tuple]:
 
 
 def check_workspace_binding(cfg: DPOConfig, host: Optional[str]) -> list[tuple]:
+    """BLOCKER if the profile is bound (workspace_hosts) to another workspace."""
     h = normalize_host(host)
     allowed = [normalize_host(x) for x in cfg.workspace_hosts]
     if allowed and h and h not in allowed:
@@ -114,6 +119,7 @@ def check_workspace_binding(cfg: DPOConfig, host: Optional[str]) -> list[tuple]:
 
 
 def check_profile_fit(cfg: DPOConfig, host: Optional[str]) -> list[tuple]:
+    """Warn about a profile that does not fit this workspace; BLOCKER for real telemetry without governance."""
     out = []
     h = normalize_host(host) or ""
     if not cfg.governance["enforce"] and (h.endswith("azuredatabricks.net") or h.startswith("adb-")):
@@ -125,9 +131,16 @@ def check_profile_fit(cfg: DPOConfig, host: Optional[str]) -> list[tuple]:
     return out
 
 
+_APP_ID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
 def check_service_principals(cfg: DPOConfig, run_as: str, admin_run_as: str, sdk=None) -> list[tuple]:
     """Pipeline SP must be an operator and NOT an admin; governance SP must be an admin."""
     out = []
+    bad = [a for a in (run_as, admin_run_as) if a and not _APP_ID.match(a)]
+    if bad:     # values end up in SCIM filters and job settings: only accept real application IDs
+        return [_row("service principals", "BLOCKER", f"not an application ID (UUID): {', '.join(bad)}",
+                     "Copy the Application ID from Settings → Identity and access → Service principals")]
     if not cfg.governance["enforce"]:
         return out
     if not run_as:
@@ -181,22 +194,63 @@ def check_service_principals(cfg: DPOConfig, run_as: str, admin_run_as: str, sdk
     return out
 
 
+def check_ai_features(cfg: DPOConfig, sdk=None) -> list[tuple]:
+    """AI narratives and ai_forecast degrade to templates / baseline when unavailable, so these are
+    warnings, never blockers: the install still succeeds, the report says what will be used."""
+    out = []
+    if cfg.ai_enabled:
+        if sdk is None:
+            out.append(_row("ai endpoint", "WARN", f"Databricks SDK not available: {cfg.ai_endpoint} not verified"))
+        else:
+            try:
+                ep = sdk.serving_endpoints.get(cfg.ai_endpoint)
+                ready = getattr(getattr(ep, "state", None), "ready", None)
+                ready = getattr(ready, "value", ready)
+                out.append(_row("ai endpoint", "OK" if ready in (None, "READY") else "WARN",
+                                f"{cfg.ai_endpoint} state={ready or 'unknown'}",
+                                "" if ready in (None, "READY") else "Narratives fall back to templates until the endpoint is READY"))
+            except Exception as exc:   # noqa: BLE001
+                out.append(_row("ai endpoint", "WARN", f"{cfg.ai_endpoint} not reachable: {type(exc).__name__}",
+                                "Pick a Databricks-hosted model available in this region (ai_endpoint in the profile) "
+                                f"and give `{cfg.group('operators')}` CAN_QUERY on it; until then narratives use templates"))
+    if cfg.forecast_enabled and cfg.forecast_method == "ai_forecast":
+        if sdk is None:
+            out.append(_row("forecast warehouse", "WARN", "Databricks SDK not available: SQL warehouse not verified"))
+        else:
+            try:
+                whs = list(sdk.warehouses.list())
+                ok = [w for w in whs if getattr(w, "enable_serverless_compute", False)
+                      or str(getattr(getattr(w, "warehouse_type", None), "value", "")).upper() == "PRO"]
+                out.append(_row("forecast warehouse", "OK" if ok else "WARN",
+                                f"{len(ok)} Pro/serverless SQL warehouse(s) visible" if ok else
+                                "no Pro or serverless SQL warehouse visible: ai_forecast cannot run",
+                                "" if ok else f"Create a serverless SQL warehouse and give `{cfg.group('operators')}` "
+                                              "CAN_USE; until then the baseline forecast is used"))
+            except Exception as exc:   # noqa: BLE001
+                out.append(_row("forecast warehouse", "WARN", f"could not list SQL warehouses: {type(exc).__name__}"))
+    return out
+
+
 def access_gate(spark, cfg: DPOConfig, host: Optional[str] = None, run_as: str = "", admin_run_as: str = "",
                 sdk=None, accepted: tuple = ()) -> list[tuple]:
+    """All install checks in one list of (check, severity, detail, fix). Read-only."""
     from .governance import preflight
     rows = (check_workspace_binding(cfg, host) + check_profile_fit(cfg, host)
             + classify_preflight(cfg, preflight(spark, cfg))
             + check_operator_system_access(spark, cfg)
-            + check_service_principals(cfg, run_as, admin_run_as, sdk))
+            + check_service_principals(cfg, run_as, admin_run_as, sdk)
+            + check_ai_features(cfg, sdk))
     # an admin may explicitly accept a known false positive (e.g. access via a parent group)
     return [(c, "ACCEPTED" if s == "BLOCKER" and c in accepted else s, d, f) for c, s, d, f in rows]
 
 
 def blockers(rows: list[tuple]) -> list[tuple]:
+    """Rows that stop the install."""
     return [r for r in rows if r[1] == "BLOCKER"]
 
 
 def blocked_message(cfg: DPOConfig, rows: list[tuple]) -> str:
+    """One error message listing every blocker with its fix."""
     b = blockers(rows)
     lines = [f"DPO install BLOCKED for profile '{cfg.profile}': {len(b)} access-control problem(s). "
              f"Nothing was created or changed.", ""]
@@ -298,6 +352,7 @@ def _strict_admin_apply(spark, cfg, run_id):
 
 
 def verify(spark, cfg: DPOConfig) -> dict:
+    """Post-install check: required sources available, no rule errors, reporting views exist."""
     from .governance import REPORTING_VIEWS, _exists
     problems = []
     st = {r.source: r.status for r in spark.table(cfg.t("ops", "source_status")).collect()}
@@ -321,7 +376,8 @@ def verify(spark, cfg: DPOConfig) -> dict:
 def build_plan(spark, cfg: DPOConfig, run_id: str, run_notebook: Optional[Callable] = None,
                include_lab: bool = True, include_tests: Optional[bool] = None,
                schedule_fn: Optional[Callable] = None, regenerate_synthetic: bool = False,
-               dashboard_fn: Optional[Callable] = None) -> list[Step]:
+               dashboard_fn: Optional[Callable] = None, genie_fn: Optional[Callable] = None) -> list[Step]:
+    """The install steps with their dependencies; run_plan executes them in order and in parallel."""
     from . import pipeline, synth
     from .governance import _exists
     synthetic = cfg.source_mode == "synthetic"
@@ -357,6 +413,8 @@ def build_plan(spark, cfg: DPOConfig, run_id: str, run_notebook: Optional[Callab
              deps=("verify",), critical=False, enabled=schedule_fn is not None),
         Step("dashboards", "Publish dashboards (no embedded credentials, group permissions)",
              dashboard_fn or (lambda: None), deps=("verify",), critical=False, enabled=dashboard_fn is not None),
+        Step("genie", "Create Genie spaces (no value sampling on secured views, group permissions)",
+             genie_fn or (lambda: None), deps=("verify",), critical=False, enabled=genie_fn is not None),
     ]
 
 

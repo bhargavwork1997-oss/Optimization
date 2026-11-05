@@ -1,10 +1,29 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 05 · Aggressive / stress tests
-# MAGIC 1. **Chaos** – duplicates, null ids, negative DBUs, unknown SKUs, time travel, schema drift, impossible CPU.
-# MAGIC 2. **Missing sources** – node_timeline and table inventory absent (typical serverless-only workspace).
-# MAGIC 3. **Empty window** – no data in range; every stage must still succeed.
-# MAGIC 4. **Volume** – `large` (≈1.6 M rows) or `xl` (≈12 M); detection must stay at 100 % recall, timings logged.
+# MAGIC # 05 · Aggressive and stress tests
+# MAGIC
+# MAGIC **Purpose.** Shows DPO keeps working on bad, missing, empty and large data, as real telemetry sometimes is.
+# MAGIC
+# MAGIC | Suite | What it does | Must hold |
+# MAGIC |---|---|---|
+# MAGIC | Chaos | duplicates, null ids, negative DBUs, unknown SKUs, time travel, schema drift, impossible CPU values | every injected scenario still found; defects quarantined, not crashing |
+# MAGIC | Missing sources | `node_timeline` and table inventory absent (typical serverless-only workspace) | other rules still work; the affected rules are skipped, not failed |
+# MAGIC | Empty window | no data in the date range | every stage succeeds with zero rows |
+# MAGIC | Volume | `medium` (~100 k), `large` (~1.6 M) or `xl` (~12 M rows) | 100 % recall; timings recorded in `ops.perf_results` |
+# MAGIC
+# MAGIC | | |
+# MAGIC |---|---|
+# MAGIC | **Who runs it** | operators or admins; the `dpo-tests` job (stress task) |
+# MAGIC | **Where** | Free Edition and enterprise **dev** only (exits on production profiles) |
+# MAGIC | **Writes** | `dpo_chaos_*`, `dpo_missing_*`, `dpo_scale_*` schemas, `ops.test_results`, `ops.perf_results` |
+# MAGIC
+# MAGIC `xl` takes long and uses a lot of the Free Edition daily quota.
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Shared bootstrap
+# MAGIC Loads the DPO package, detects the profile, creates the shared widgets and builds `cfg` (see `_common`).
 
 # COMMAND ----------
 
@@ -12,10 +31,20 @@
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ### 1 · Run the four suites
+# MAGIC Each suite generates its own data in its own schema prefix, runs the pipeline and records the checks.
+
+# COMMAND ----------
+
 dbutils.widgets.dropdown("volume_scale", "large", ["medium", "large", "xl"], "Volume test scale")
 import time
 from pyspark.sql import functions as F
 from dpo import pipeline, synth, validation
+
+if cfg.governance["enforce"] and not cfg.governance.get("operators_can_create_schemas"):
+    # test suites create extra dpo_*test schemas: never in a production catalog
+    dbutils.notebook.exit(f"profile '{cfg.profile}' does not allow test schemas; run the tests in a dev workspace")
 
 results, perf = [], []
 
@@ -54,6 +83,14 @@ for l in ctx.log:
     perf.append((scale, l["stage"], float(l["seconds"]), rows))
 perf.append((scale, "generate", gen_s, rows))
 record(f"volume_{scale}", validation.run_all_checks(ctx))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### 2 · Report and assert
+# MAGIC Appends the checks to `ops.test_results` and timings to `ops.perf_results`; fails the notebook if any check failed.
+
+# COMMAND ----------
 
 # report ------------------------------------------------------------------------------
 res = (spark.createDataFrame(results, "suite string, check string, passed boolean, detail string")

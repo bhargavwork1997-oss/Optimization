@@ -12,6 +12,7 @@ enterprise account is a profile switch, not a code change:
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import json
 import os
 import re
@@ -44,6 +45,8 @@ _CC_VALUE = re.compile(r"^[A-Za-z0-9_.()@ -]+$")
 _SKU_LIKE = re.compile(r"^[A-Za-z0-9_%]+$")
 _LOCATION = re.compile(r"^(abfss|s3|gs|r2)://[A-Za-z0-9@._/:-]+$")
 _HOST = re.compile(r"^[a-z0-9.-]+$")
+_PROFILE = re.compile(r"^[a-z0-9_]{1,64}$")
+HOSTED_PREFIXES = ("databricks-", "system.ai.")   # Databricks-hosted foundation models
 
 
 def normalize_host(host: Optional[str]) -> Optional[str]:
@@ -78,6 +81,7 @@ PROFILE_DIR = os.path.join(_ROOT, "config", "environments")
 
 
 def default_governance() -> dict:
+    """Governance defaults: everything off (Free Edition). Enterprise profiles switch it on."""
     return {
         "enforce": False,              # authorization check + row/identity filtering in reporting views
         "apply_grants": False,         # run GRANT / OWNER / TAG statements each run
@@ -99,6 +103,7 @@ def default_governance() -> dict:
         "operators_can_create_schemas": False,  # dev only: lets test suites create dpo_test_* schemas
         "retain_raw_sql": False,           # False: bronze keeps literal- and comment-stripped SQL only
         "ai_allow_external": False,        # False: ai_query only to Databricks-hosted endpoints
+        "allowed_catalogs": [],            # extra catalogs a run may be redirected to (catalog override)
         "simulate_membership": None,       # local tests only (refused when a catalog is set)
         "simulate_user": None,             # local tests only (refused when a catalog is set)
     }
@@ -124,17 +129,27 @@ class DPOConfig:
     workspace_hosts: list = field(default_factory=list)  # workspaces this profile may run in (auto-detect + guard)
     ai_enabled: bool = False
     ai_endpoint: str = "databricks-meta-llama-3-3-70b-instruct"
-    ai_max_rows: int = 25
+    ai_max_rows: int = 25                     # findings narrated per run (top by rank); cached by input
+    # spend forecast + budget outlook (gold.cost_forecast, gold.budget_outlook)
+    forecast_enabled: bool = True
+    forecast_method: str = "ai_forecast"      # "ai_forecast" (SQL warehouse) | "baseline" (weekday average)
+    forecast_interval: float = 0.8            # prediction interval width (0.5-0.99)
+    forecast_version: str = ""                # "" = Databricks default, "1" or "2" (2 needs preview enrolment)
+    forecast_warehouse_id: str = ""           # set at run time by the job (bundle var.warehouse_id)
+    budgets: dict = field(default_factory=dict)  # {"cc-finance": 6000} monthly budget per cost centre
     inventory_catalogs: list = field(default_factory=list)  # system mode: catalogs to scan for table layout
     inventory_max_tables: int = 500
     log_retention_days: int = 365
     governance: dict = field(default_factory=default_governance)
+    profile_catalog: Optional[str] = None     # catalog as written in the profile (set by from_profile)
 
     # ---- profiles -------------------------------------------------------------
     @classmethod
     def from_profile(cls, name: str, overrides: Optional[dict] = None,
                      profile_dir: str = PROFILE_DIR) -> "DPOConfig":
         """Load config/environments/<name>.json, then apply non-empty overrides."""
+        if not _PROFILE.match(name or ""):   # the name comes from widgets/job parameters: no paths
+            raise ValueError(f"illegal profile name: {name!r}")
         path = os.path.join(profile_dir, f"{name}.json")
         if not os.path.exists(path):
             avail = sorted(f[:-5] for f in os.listdir(profile_dir) if f.endswith(".json"))
@@ -142,6 +157,7 @@ class DPOConfig:
         with open(path) as fh:
             data = json.load(fh)
         data["profile"] = name
+        data["profile_catalog"] = data.get("catalog")      # remembered: the runtime guard refuses redirects
         for k, v in (overrides or {}).items():
             if v not in (None, "", []):
                 data[k] = v
@@ -149,6 +165,7 @@ class DPOConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> "DPOConfig":
+        """Build a config from a plain dict; unknown keys are refused (typos must not be silently ignored)."""
         known = {f.name for f in fields(cls)}
         unknown = set(data) - known - {"description"}
         if unknown:
@@ -163,38 +180,52 @@ class DPOConfig:
         return cls(governance=gov, **data)
 
     def to_dict(self) -> dict:
+        """Plain-dict copy (for logging and tests)."""
         return {f.name: copy.deepcopy(getattr(self, f.name)) for f in fields(self)}
 
     # ---- naming -------------------------------------------------------------
     def schema(self, layer: str) -> str:
+        """Schema name for a layer, e.g. dpo.gold or workspace.dpo_gold."""
         name = f"{self.schema_prefix}{layer}"
         return f"{self.catalog}.{name}" if self.catalog else name
 
     def t(self, layer: str, name: str) -> str:
+        """Fully qualified table name: <catalog>.<prefix><layer>.<name>."""
         return f"{self.schema(layer)}.{name}"
 
     def source(self, name: str) -> Optional[str]:
+        """System table to read for a source, or its synthetic twin in synthetic mode."""
         if self.source_mode == "system":
             return SYSTEM_SOURCES[name]
         return self.t("sim", name)
 
     def group(self, role: str) -> str:
+        """Account group name for a role (admins, operators, analysts, viewers)."""
         return self.governance["groups"][role]
 
     # ---- rules ----------------------------------------------------------------
     def rules(self) -> dict:
+        """Rule metadata and thresholds from config/rules.json, keyed by rule id."""
         with open(os.path.abspath(self.rules_path)) as fh:
             data = json.load(fh)
         return {r["rule_id"]: r for r in data["rules"]}
 
     def validate(self) -> None:
+        """Reject unsafe or inconsistent settings before any SQL is built. Everything interpolated into SQL is
+        allow-listed here (identifiers, groups, cost centres, SKU patterns, hosts, endpoints, dates, ranges).
+        """
         if self.source_mode not in ("synthetic", "system"):
             raise ValueError(f"source_mode must be synthetic|system, got {self.source_mode}")
         total = round(sum(self.weights.values()), 6)
         if total != 1.0:
             raise ValueError(f"score weights must sum to 1.0, got {total}")
-        if self.lookback_days < 7:
-            raise ValueError("lookback_days must be >= 7 (baselines need history)")
+        if not 7 <= int(self.lookback_days) <= 400:
+            raise ValueError("lookback_days must be between 7 (baselines need history) and 400 (cost of scanning)")
+        if self.end_date:
+            try:
+                dt.date.fromisoformat(self.end_date)
+            except ValueError:
+                raise ValueError(f"end_date must be YYYY-MM-DD: {self.end_date!r}") from None
         if not 0 < float(self.price_multiplier) <= 1.5:
             raise ValueError("price_multiplier must be in (0, 1.5]")
         g = self.governance
@@ -213,7 +244,7 @@ class DPOConfig:
                            ("cost_center_tag", self.cost_center_tag)):
             if val is not None and not _IDENT.match(val):
                 raise ValueError(f"illegal characters in {label}: {val!r}")
-        for c in self.inventory_catalogs:
+        for c in list(self.inventory_catalogs) + list(g.get("allowed_catalogs", [])):
             if not _IDENT.match(c):
                 raise ValueError(f"illegal characters in inventory catalog: {c!r}")
         for h in self.workspace_hosts:
@@ -233,8 +264,21 @@ class DPOConfig:
                 raise ValueError(f"bad contract price {pat!r}: {price!r}")
         if not _ENDPOINT.match(self.ai_endpoint):
             raise ValueError(f"illegal ai_endpoint: {self.ai_endpoint!r}")
-        if self.ai_enabled and not g["ai_allow_external"] and not self.ai_endpoint.startswith("databricks-"):
-            raise ValueError("ai_endpoint must be a Databricks-hosted model (databricks-*) unless "
+        if self.ai_enabled and not g["ai_allow_external"] and not self.ai_endpoint.startswith(HOSTED_PREFIXES):
+            raise ValueError("ai_endpoint must be a Databricks-hosted model (databricks-* or system.ai.*) unless "
                              "governance.ai_allow_external is approved")
+        if not 1 <= int(self.ai_max_rows) <= 200:
+            raise ValueError("ai_max_rows must be between 1 and 200")
+        if self.forecast_method not in ("ai_forecast", "baseline"):
+            raise ValueError(f"forecast_method must be ai_forecast or baseline: {self.forecast_method!r}")
+        if not 0.5 <= float(self.forecast_interval) <= 0.99:
+            raise ValueError("forecast_interval must be between 0.5 and 0.99")
+        if self.forecast_version not in ("", "1", "2"):
+            raise ValueError("forecast_version must be '', '1' or '2'")
+        if self.forecast_warehouse_id and not _IDENT.match(self.forecast_warehouse_id):
+            raise ValueError(f"illegal forecast_warehouse_id: {self.forecast_warehouse_id!r}")
+        for cc, amount in self.budgets.items():
+            if not _CC_VALUE.match(cc) or not 0 < float(amount) < 1e12:
+                raise ValueError(f"bad budget {cc!r}: {amount!r}")
         if g["membership_function"] not in ("is_account_group_member", "is_member"):
             raise ValueError("membership_function must be is_account_group_member or is_member")

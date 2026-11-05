@@ -44,6 +44,7 @@ def query_fingerprint(col: Column) -> Column:
 
 def workload_key(job_id: Column, warehouse_id: Column, pipeline_id: Column,
                  cluster_id: Column, notebook_id: Column, product: Column) -> Column:
+    """Stable '<type>:<id>' key for a usage row (job, cluster, warehouse, pipeline, ...)."""
     return (F.when(job_id.isNotNull(), F.concat(F.lit("job:"), job_id))
              .when(warehouse_id.isNotNull(), F.concat(F.lit("warehouse:"), warehouse_id))
              .when(pipeline_id.isNotNull(), F.concat(F.lit("pipeline:"), pipeline_id))
@@ -53,6 +54,7 @@ def workload_key(job_id: Column, warehouse_id: Column, pipeline_id: Column,
 
 
 def workload_type(key: Column) -> Column:
+    """Type part of a workload key ('job:123' -> 'job')."""
     return F.substring_index(key, ":", 1)
 
 

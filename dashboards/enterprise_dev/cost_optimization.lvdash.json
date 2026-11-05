@@ -57,6 +57,34 @@
         "                      'Feasibility 0.20·F', f, 'Reversibility 0.20·R', r) s AS component, weighted\n",
         "WHERE backlog_rank <= 15\n"
       ]
+    },
+    {
+      "name": "ds_budget",
+      "displayName": "Budget outlook",
+      "queryLines": [
+        "SELECT cost_center, status, budget, round(actual_mtd, 2) AS actual_mtd,\n",
+        "       round(forecast_remaining, 2) AS forecast_remaining, round(projected_total, 2) AS projected_total,\n",
+        "       round(projected_lower, 2) AS projected_lower, round(projected_upper, 2) AS projected_upper,\n",
+        "       round(pct_of_budget * 100, 1) AS pct_of_budget, round(budget_gap, 2) AS budget_gap,\n",
+        "       greatest(coalesce(budget_gap, 0), 0) AS overrun, days_remaining, month_start, as_of_date, method,\n",
+        "       CASE WHEN status IN ('OVER_BUDGET', 'AT_RISK') THEN 1 ELSE 0 END AS is_at_risk,\n",
+        "       CASE status WHEN 'OVER_BUDGET' THEN 1 WHEN 'AT_RISK' THEN 2 WHEN 'WATCH' THEN 3\n",
+        "                   WHEN 'ON_TRACK' THEN 4 ELSE 5 END AS status_order\n",
+        "FROM dpo_dev.reporting.budget_outlook\n"
+      ]
+    },
+    {
+      "name": "ds_forecast",
+      "displayName": "Actual vs forecast",
+      "queryLines": [
+        "SELECT usage_date AS day, cost_center, 'Actual' AS series, sum(cost) AS cost\n",
+        "FROM dpo_dev.reporting.cost_by_dimension GROUP BY usage_date, cost_center\n",
+        "UNION ALL\n",
+        "SELECT forecast_date, cost_center, s.series, s.cost\n",
+        "FROM dpo_dev.reporting.cost_forecast\n",
+        "LATERAL VIEW stack(3, 'Forecast', cost_forecast, 'Forecast high', cost_upper,\n",
+        "                      'Forecast low', cost_lower) s AS series, cost\n"
+      ]
     }
   ],
   "pages": [
@@ -2174,6 +2202,861 @@
             "x": 3,
             "y": 13,
             "width": 3,
+            "height": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "budget",
+      "displayName": "Budget & forecast",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layout": [
+        {
+          "widget": {
+            "name": "bf_header",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Budget & forecast",
+                "Spend so far this month plus the forecast for the remaining days, per cost centre, against the monthly budget in the profile. **OVER_BUDGET** already above · **AT_RISK** projection above · **WATCH** only the upper bound above · **ON_TRACK**.",
+                "Method `ai_forecast` = Databricks AI forecasting on the SQL warehouse; `baseline` = weekday average (used when AI forecasting is unavailable). Forecasts are estimates: read the range."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "bf_f_cc",
+            "queries": [
+              {
+                "name": "bf_f_cc_ds_budget",
+                "query": {
+                  "datasetName": "ds_budget",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "cost_center",
+                      "expression": "`cost_center`"
+                    },
+                    {
+                      "name": "cost_center_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ]
+                }
+              },
+              {
+                "name": "bf_f_cc_ds_forecast",
+                "query": {
+                  "datasetName": "ds_forecast",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "cost_center",
+                      "expression": "`cost_center`"
+                    },
+                    {
+                      "name": "cost_center_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "cost_center",
+                    "displayName": "Cost center",
+                    "queryName": "bf_f_cc_ds_budget"
+                  },
+                  {
+                    "fieldName": "cost_center",
+                    "displayName": "Cost center",
+                    "queryName": "bf_f_cc_ds_forecast"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Cost center"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "bf_k_risk",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_budget",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "value",
+                      "expression": "SUM(`is_at_risk`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "frame": {
+                "showTitle": true,
+                "title": "Cost centres over or at risk"
+              },
+              "encodings": {
+                "value": {
+                  "fieldName": "value",
+                  "displayName": "Cost centres over or at risk",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "bf_k_projected",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_budget",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "value",
+                      "expression": "SUM(`projected_total`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "frame": {
+                "showTitle": true,
+                "title": "Projected month (USD)"
+              },
+              "encodings": {
+                "value": {
+                  "fieldName": "value",
+                  "displayName": "Projected month (USD)",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "bf_k_budget",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_budget",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "value",
+                      "expression": "SUM(`budget`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "frame": {
+                "showTitle": true,
+                "title": "Budget (USD)",
+                "showDescription": true,
+                "description": "Cost centres with a budget in the profile"
+              },
+              "encodings": {
+                "value": {
+                  "fieldName": "value",
+                  "displayName": "Budget (USD)",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "bf_k_overrun",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_budget",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "value",
+                      "expression": "SUM(`overrun`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "frame": {
+                "showTitle": true,
+                "title": "Projected overrun (USD)"
+              },
+              "encodings": {
+                "value": {
+                  "fieldName": "value",
+                  "displayName": "Projected overrun (USD)",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 5,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "bf_outlook",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_budget",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "name": "cost_center",
+                      "expression": "`cost_center`"
+                    },
+                    {
+                      "name": "status",
+                      "expression": "`status`"
+                    },
+                    {
+                      "name": "budget",
+                      "expression": "`budget`"
+                    },
+                    {
+                      "name": "actual_mtd",
+                      "expression": "`actual_mtd`"
+                    },
+                    {
+                      "name": "forecast_remaining",
+                      "expression": "`forecast_remaining`"
+                    },
+                    {
+                      "name": "projected_total",
+                      "expression": "`projected_total`"
+                    },
+                    {
+                      "name": "projected_lower",
+                      "expression": "`projected_lower`"
+                    },
+                    {
+                      "name": "projected_upper",
+                      "expression": "`projected_upper`"
+                    },
+                    {
+                      "name": "pct_of_budget",
+                      "expression": "`pct_of_budget`"
+                    },
+                    {
+                      "name": "budget_gap",
+                      "expression": "`budget_gap`"
+                    },
+                    {
+                      "name": "days_remaining",
+                      "expression": "`days_remaining`"
+                    },
+                    {
+                      "name": "method",
+                      "expression": "`method`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "frame": {
+                "showTitle": true,
+                "title": "Budget outlook this month",
+                "showDescription": true,
+                "description": "Worst first: sort by status"
+              },
+              "encodings": {
+                "columns": [
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "cost_center",
+                    "displayName": "Cost center",
+                    "title": "Cost center",
+                    "order": 100000,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "status",
+                    "displayName": "Status",
+                    "title": "Status",
+                    "order": 100001,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left",
+                    "cellFormat": {
+                      "default": {
+                        "foregroundColor": "#15191E"
+                      },
+                      "rules": [
+                        {
+                          "if": {
+                            "column": "status",
+                            "fn": "=",
+                            "literal": "OVER_BUDGET"
+                          },
+                          "value": {
+                            "foregroundColor": "#B3261E"
+                          }
+                        },
+                        {
+                          "if": {
+                            "column": "status",
+                            "fn": "=",
+                            "literal": "AT_RISK"
+                          },
+                          "value": {
+                            "foregroundColor": "#C2551A"
+                          }
+                        },
+                        {
+                          "if": {
+                            "column": "status",
+                            "fn": "=",
+                            "literal": "WATCH"
+                          },
+                          "value": {
+                            "foregroundColor": "#C2551A"
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "budget",
+                    "displayName": "Budget",
+                    "title": "Budget",
+                    "order": 100002,
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "$0,0.00"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "actual_mtd",
+                    "displayName": "Spent so far",
+                    "title": "Spent so far",
+                    "order": 100003,
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "$0,0.00"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "forecast_remaining",
+                    "displayName": "Forecast rest of month",
+                    "title": "Forecast rest of month",
+                    "order": 100004,
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "$0,0.00"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "projected_total",
+                    "displayName": "Projected month",
+                    "title": "Projected month",
+                    "order": 100005,
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "$0,0.00"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "projected_lower",
+                    "displayName": "Low",
+                    "title": "Low",
+                    "order": 100006,
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "$0,0.00"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "projected_upper",
+                    "displayName": "High",
+                    "title": "High",
+                    "order": 100007,
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "$0,0.00"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "pct_of_budget",
+                    "displayName": "% of budget",
+                    "title": "% of budget",
+                    "order": 100008,
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "0.0",
+                    "cellFormat": {
+                      "default": {
+                        "foregroundColor": "#15191E"
+                      },
+                      "rules": [
+                        {
+                          "if": {
+                            "column": "pct_of_budget",
+                            "fn": ">",
+                            "literal": "100"
+                          },
+                          "value": {
+                            "foregroundColor": "#C2551A"
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "budget_gap",
+                    "displayName": "Gap to budget",
+                    "title": "Gap to budget",
+                    "order": 100009,
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "$0,0.00"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "days_remaining",
+                    "displayName": "Days left",
+                    "title": "Days left",
+                    "order": 100010,
+                    "type": "integer",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "numberFormat": "0,0"
+                  },
+                  {
+                    "allowHTML": false,
+                    "allowSearch": false,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "highlightLinks": false,
+                    "imageHeight": "",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "linkOpenInNewTab": true,
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "preserveWhitespace": false,
+                    "useMonospaceFont": false,
+                    "visible": true,
+                    "fieldName": "method",
+                    "displayName": "Method",
+                    "title": "Method",
+                    "order": 100011,
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left"
+                  }
+                ]
+              },
+              "invisibleColumns": [],
+              "allowHTMLByDefault": false,
+              "itemsPerPage": 25,
+              "paginationSize": "default",
+              "condensed": true,
+              "withRowNumber": false
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "bf_actual_forecast",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_forecast",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "name": "day",
+                      "expression": "`day`"
+                    },
+                    {
+                      "name": "y",
+                      "expression": "SUM(`cost`)"
+                    },
+                    {
+                      "name": "series",
+                      "expression": "`series`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "day",
+                  "displayName": "Day",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "axis": {
+                    "title": "Day"
+                  }
+                },
+                "y": {
+                  "fieldName": "y",
+                  "displayName": "Cost (USD)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "axis": {
+                    "title": "Cost (USD)"
+                  }
+                },
+                "label": {
+                  "show": false
+                },
+                "color": {
+                  "fieldName": "series",
+                  "displayName": "series",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Daily cost: actual and forecast",
+                "showDescription": true,
+                "description": "Forecast high / low = prediction interval; pick one cost centre for a clear view"
+              },
+              "mark": {
+                "colors": [
+                  "#1F4E99",
+                  "#E0A030",
+                  "#2E8B57",
+                  "#C2551A",
+                  "#7FA7D9",
+                  "#8A3A0B",
+                  "#99C9A6",
+                  "#F2B8A0",
+                  "#919191",
+                  "#5B6B7A"
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 10,
+            "width": 6,
             "height": 7
           }
         }

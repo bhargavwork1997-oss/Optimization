@@ -1,5 +1,5 @@
 {
-  "description": "Enterprise production. Edit workspace_hosts, catalog, managed_location, workspace_ids, contract_prices/price_multiplier and group names for the client, then open notebooks/00_install and Run all.",
+  "description": "Enterprise production. Edit workspace_hosts, catalog, managed_location, workspace_ids, contract_prices/price_multiplier and group names and monthly budgets per cost centre for the client, then open notebooks/00_install and Run all.",
   "catalog": "dpo",
   "schema_prefix": "",
   "managed_location": null,
@@ -36,7 +36,10 @@
     "retain_raw_sql": false,
     "ai_allow_external": false
   },
-  "ai_enabled": false,
+  "ai_enabled": true,
   "contract_prices": {},
-  "workspace_hosts": []
+  "workspace_hosts": [],
+  "ai_max_rows": 25,
+  "budgets": {},
+  "forecast_method": "ai_forecast"
 }

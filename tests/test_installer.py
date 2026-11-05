@@ -120,16 +120,20 @@ def _fake_sdk(ops_members, admin_members, sps):
 def test_service_principal_least_privilege_checks():
     from dpo.config import DPOConfig
     from dpo.installer import check_service_principals
+    ok_, both_, adm_, ghost = (f"{i}0000000-0000-0000-0000-000000000000" for i in "1234")
     cfg = DPOConfig.from_profile("enterprise_prod")
-    sdk = _fake_sdk(ops_members=["1", "2"], admin_members=["2", "9"], sps={"app-ok": "1", "app-both": "2", "app-adm": "9"})
+    sdk = _fake_sdk(ops_members=["1", "2"], admin_members=["2", "9"], sps={ok_: "1", both_: "2", adm_: "9"})
     sev = lambda r: {x[0]: (x[1], x[2]) for x in r}
-    ok = sev(check_service_principals(cfg, "app-ok", "app-adm", sdk))
+    ok = sev(check_service_principals(cfg, ok_, adm_, sdk))
     assert ok["pipeline run-as"][0] == "OK" and ok["governance run-as"][0] == "OK"
-    both = sev(check_service_principals(cfg, "app-both", "app-ok", sdk))
+    both = sev(check_service_principals(cfg, both_, ok_, sdk))
     assert both["pipeline run-as"][0] == "BLOCKER" and "also in `dpo-admins`" in both["pipeline run-as"][1]
     assert both["governance run-as"][0] == "BLOCKER"                        # operator SP is not an admin
-    missing = sev(check_service_principals(cfg, "app-ghost", "", sdk))
+    missing = sev(check_service_principals(cfg, ghost, "", sdk))
     assert missing["pipeline run-as"][0] == "BLOCKER" and missing["governance run-as"][0] == "WARN"
+    # anything that is not an application ID is refused before it reaches a SCIM filter or job setting
+    inj = check_service_principals(cfg, 'x" or displayName pr "', "", sdk)
+    assert inj[0][1] == "BLOCKER" and "UUID" in inj[0][2]
 
 
 # --------------------------------------------------------------- job creation --
@@ -218,7 +222,7 @@ def test_full_install_free_edition_style(spark):
     assert st == {"governance_base": "SUCCESS", "synthetic_data": "SUCCESS", "pipeline": "SUCCESS",
                   "viewer_layer": "SUCCESS", "optimization_lab": "DISABLED", "regression_tests": "DISABLED",
                   "verify": "SUCCESS", "schedule_jobs": "DISABLED",
-                  "dashboards": "DISABLED"}
+                  "dashboards": "DISABLED", "genie": "DISABLED"}
     verify = next(r for r in res if r["step"] == "verify")["detail"]
     assert '"findings": 17' in verify
     # idempotent: a second install reuses data and succeeds
@@ -306,3 +310,48 @@ def test_publish_dashboards_creates_publishes_without_credentials_and_respects_b
     n = len(calls["publish"])
     assert all("asset bundle" in o["action"] for o in dashboard.publish_dashboards(cfg, sdk, root, "/x"))
     assert len(calls["publish"]) == n
+
+
+def test_publish_genie_spaces_creates_updates_sets_acl_and_respects_bundle():
+    from types import SimpleNamespace as NS
+    from dpo import genie
+    from dpo.config import DPOConfig
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    cfg = DPOConfig.from_profile("enterprise_prod")
+    calls = {"create": [], "update": [], "perms": []}
+
+    class Genie:
+        def __init__(self):
+            self.spaces = []
+        def list_spaces(self, page_token=None):
+            return NS(spaces=self.spaces, next_page_token=None)
+        def create_space(self, **kw):
+            calls["create"].append(kw); return NS(space_id=f"new-{len(calls['create'])}")
+        def update_space(self, space_id, **kw):
+            calls["update"].append((space_id, kw)); return NS(space_id=space_id)
+
+    sdk = NS(jobs=NS(list=lambda: []), genie=Genie(),
+             warehouses=NS(list=lambda: [NS(id="w2", name="dpo-sql", enable_serverless_compute=True)]),
+             workspace=NS(mkdirs=lambda p: None),
+             permissions=NS(set=lambda kind, i, access_control_list: calls["perms"].append((kind, i, access_control_list))))
+    out = genie.publish_genie_spaces(cfg, sdk, root, "/Workspace/Users/a@b/genie")
+    assert [o["action"] for o in out] == ["created", "created"]
+    body = calls["create"][0]
+    assert body["warehouse_id"] == "w2" and body["parent_path"] == "/Workspace/Users/a@b/genie"
+    assert body["serialized_space"] == open(genie.file_path(root, cfg.profile, "cost_optimization")).read()
+    assert calls["perms"][0][0] == "genie"
+    assert cfg.group("viewers") not in {a.group_name for a in calls["perms"][1][2]}
+    # second run updates in place; a same-named space in someone else's folder is not touched
+    sdk.genie.spaces = [NS(title=f"{t} ({cfg.profile})", space_id=f"id{i}", parent_path="/Users/a@b/genie")
+                        for i, t in enumerate(genie.SPACES.values())]
+    sdk.genie.spaces.append(NS(title=f"{genie.SPACES['engineering']} ({cfg.profile})", space_id="other",
+                               parent_path="/Users/someone/else"))
+    out = genie.publish_genie_spaces(cfg, sdk, root, "/Workspace/Users/a@b/genie")
+    assert [o["action"] for o in out] == ["updated", "updated"]
+    assert [u[0] for u in calls["update"]] == ["id0", "id1"]
+    # bundle-managed: change nothing
+    sdk.jobs = NS(list=lambda: [NS(job_id=1, settings=NS(name="x", deployment=NS(kind="BUNDLE"),
+                                                          tags={"app": "dpo-accelerator", "dpo_profile": cfg.profile}))])
+    n = len(calls["create"]) + len(calls["update"])
+    assert all("asset bundle" in o["action"] for o in genie.publish_genie_spaces(cfg, sdk, root, "/x"))
+    assert len(calls["create"]) + len(calls["update"]) == n

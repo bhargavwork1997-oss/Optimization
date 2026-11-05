@@ -127,6 +127,7 @@ def test_bundle_install_job_never_creates_jobs_itself():
     jobs, _ = _jobs_for("enterprise_prod")
     params = jobs["dpo_install"]["tasks"][0]["notebook_task"]["base_parameters"]
     assert params["schedule"] == "none"
+    assert params["dashboards"] == "no" and params["genie"] == "no"     # the bundle owns both
     assert params["pipeline_run_as"] == "${var.service_principal}"
 
 
@@ -180,3 +181,28 @@ def test_dashboards_deployed_safely(target):
         if target != "dev":
             assert {"${var.analysts_group}", "${var.operators_group}"} <= groups
             assert all(p["level"] in ("CAN_RUN", "CAN_MANAGE") for p in d.get("permissions", []))
+
+
+@pytest.mark.parametrize("target", TARGETS)
+def test_genie_spaces_deployed_safely(target):
+    """Both generated Genie spaces per target, from the target's profile; the gold/ops space never reaches
+    viewers; nobody but admins can edit or manage (managers see every user's conversations)."""
+    root = _load(BUNDLE)
+    assert root["bundle"]["engine"] == "direct", "genie_spaces deploy only with the direct engine"
+    m = re.search(r">=\s*(\d+)\.(\d+)", root["bundle"]["databricks_cli_version"])
+    assert (int(m.group(1)), int(m.group(2))) >= (1, 3), "genie_spaces need CLI >= 1.3.0"
+    cfg = root["targets"][target]
+    prof = (cfg.get("variables") or {}).get("profile", root["variables"]["profile"]["default"])
+    spaces = (cfg.get("resources") or {}).get("genie_spaces") or {}
+    assert set(spaces) == {"dpo_genie_cost", "dpo_genie_engineering"}, target
+    for k, g in spaces.items():
+        assert g["warehouse_id"] == "${var.warehouse_id}" and g["title"] and "serialized_space" not in g
+        expected = f"./genie/{prof}/{'cost_optimization' if k == 'dpo_genie_cost' else 'engineering'}.geniespace.json"
+        assert g["file_path"] == expected and os.path.isfile(os.path.join(ROOT, expected)), (target, k)
+        perms = g.get("permissions", [])
+        groups = {p.get("group_name") for p in perms}
+        if k == "dpo_genie_engineering":
+            assert "${var.viewers_group}" not in groups, f"{target}: engineering space reads gold/ops"
+        assert all(p["level"] == "CAN_RUN" or p.get("group_name") == "${var.admins_group}" for p in perms)
+        if target != "dev":
+            assert {"${var.analysts_group}", "${var.operators_group}"} <= groups

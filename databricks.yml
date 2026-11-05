@@ -8,13 +8,18 @@
 #
 # Dashboards (resources.dashboards) are generated files: edit src/dpo/dashboard.py, run
 # `cd src && python -m dpo.dashboard`, commit dashboards/<profile>/*.lvdash.json, deploy.
+# Genie spaces (resources.genie_spaces) likewise: edit src/dpo/genie.py, run `cd src && python -m dpo.genie`,
+# commit genie/<profile>/*.geniespace.json, deploy.
 #
 # Targets map 1:1 to profiles in config/environments/ (catalog, sources, governance).
 # Checked with `databricks bundle validate` (CLI v1.22.1) for all three targets, and against the CLI's
 # JSON schema in CI (tests/test_bundle.py).
 bundle:
   name: dpo-accelerator
-  databricks_cli_version: ">= 0.250.0"
+  # >= 1.3.0 for resources.genie_spaces, which deploy only with the direct engine (the default since then;
+  # pinned so older Terraform-state deployments are migrated instead of failing on the Genie spaces).
+  databricks_cli_version: ">= 1.3.0"
+  engine: direct
 
 include:
   - resources/*.yml
@@ -43,7 +48,7 @@ variables:
   viewers_group:
     default: dpo-viewers
   warehouse_id:
-    description: SQL warehouse the dashboards run on (resolved by name per target)
+    description: SQL warehouse the dashboards and Genie spaces run on (resolved by name per target)
     default: ""
   service_principal:
     description: Application ID the pipeline runs as (member of the operators group only); "" = deployer
@@ -76,6 +81,17 @@ targets:
           file_path: ./dashboards/free_edition/engineering.lvdash.json
           warehouse_id: ${var.warehouse_id}
           embed_credentials: false
+      genie_spaces:
+        dpo_genie_cost:        # reporting views only, no value sampling -> safe for viewers
+          title: DPO · Ask cost optimization (free_edition)
+          description: Ask about Databricks spend and the prioritised optimisation backlog (secured reporting views).
+          warehouse_id: ${var.warehouse_id}
+          file_path: ./genie/free_edition/cost_optimization.geniespace.json
+        dpo_genie_engineering: # gold/ops -> analysts and operators only, never viewers
+          title: DPO · Ask engineering (free_edition)
+          description: Ask about job and query efficiency, cost attribution, rule findings and pipeline health.
+          warehouse_id: ${var.warehouse_id}
+          file_path: ./genie/free_edition/engineering.geniespace.json
       jobs:
         dpo_tests:
           name: dpo-tests-${var.profile}
@@ -123,6 +139,26 @@ targets:
           file_path: ./dashboards/enterprise_dev/engineering.lvdash.json
           warehouse_id: ${var.warehouse_id}
           embed_credentials: false
+          permissions:
+            - {level: CAN_MANAGE, group_name: "${var.admins_group}"}
+            - {level: CAN_RUN, group_name: "${var.operators_group}"}
+            - {level: CAN_RUN, group_name: "${var.analysts_group}"}
+      genie_spaces:
+        dpo_genie_cost:        # reporting views only, no value sampling -> safe for viewers
+          title: DPO · Ask cost optimization (enterprise_dev)
+          description: Ask about Databricks spend and the prioritised optimisation backlog (secured reporting views).
+          warehouse_id: ${var.warehouse_id}
+          file_path: ./genie/enterprise_dev/cost_optimization.geniespace.json
+          permissions:
+            - {level: CAN_MANAGE, group_name: "${var.admins_group}"}
+            - {level: CAN_RUN, group_name: "${var.operators_group}"}
+            - {level: CAN_RUN, group_name: "${var.analysts_group}"}
+            - {level: CAN_RUN, group_name: "${var.viewers_group}"}
+        dpo_genie_engineering: # gold/ops -> analysts and operators only, never viewers
+          title: DPO · Ask engineering (enterprise_dev)
+          description: Ask about job and query efficiency, cost attribution, rule findings and pipeline health.
+          warehouse_id: ${var.warehouse_id}
+          file_path: ./genie/enterprise_dev/engineering.geniespace.json
           permissions:
             - {level: CAN_MANAGE, group_name: "${var.admins_group}"}
             - {level: CAN_RUN, group_name: "${var.operators_group}"}
@@ -220,6 +256,24 @@ targets:
           file_path: ./dashboards/enterprise_prod/engineering.lvdash.json
           warehouse_id: ${var.warehouse_id}
           embed_credentials: false
+          permissions:
+            - {level: CAN_RUN, group_name: "${var.operators_group}"}
+            - {level: CAN_RUN, group_name: "${var.analysts_group}"}
+      genie_spaces:
+        dpo_genie_cost:        # reporting views only, no value sampling -> safe for viewers
+          title: DPO · Ask cost optimization
+          description: Ask about Databricks spend and the prioritised optimisation backlog (secured reporting views).
+          warehouse_id: ${var.warehouse_id}
+          file_path: ./genie/enterprise_prod/cost_optimization.geniespace.json
+          permissions:
+            - {level: CAN_RUN, group_name: "${var.operators_group}"}
+            - {level: CAN_RUN, group_name: "${var.analysts_group}"}
+            - {level: CAN_RUN, group_name: "${var.viewers_group}"}
+        dpo_genie_engineering: # gold/ops -> analysts and operators only, never viewers
+          title: DPO · Ask engineering
+          description: Ask about job and query efficiency, cost attribution, rule findings and pipeline health.
+          warehouse_id: ${var.warehouse_id}
+          file_path: ./genie/enterprise_prod/engineering.geniespace.json
           permissions:
             - {level: CAN_RUN, group_name: "${var.operators_group}"}
             - {level: CAN_RUN, group_name: "${var.analysts_group}"}

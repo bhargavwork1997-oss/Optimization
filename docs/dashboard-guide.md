@@ -89,3 +89,13 @@ dashboard, edit the copy, then port the change into `dashboard.py`.
 
 Every reader also needs CAN_USE on the warehouse. Data access still comes from Unity Catalog grants: a viewer who
 opens the engineering dashboard through a forwarded link sees errors, not data.
+
+### DPO · Engineering → DPO's own cost
+
+| Widgets | Dataset |
+|---|---|
+| counters: DPO cost / month · estimated savings found / month · savings-to-cost ratio · DPO share of all spend | `ds_self_summary` |
+| bars: DPO cost by day and component (jobs, sql, tagged); cost by job or SQL client | `ds_self_daily` |
+| table: cost per DPO job run (start, job, result, minutes, cost, DBUs) | `ds_self_runs` |
+
+Reads `gold.dpo_cost_*` (account-wide totals), so it is on the analysts/operators dashboard only.

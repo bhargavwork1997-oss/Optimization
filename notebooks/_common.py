@@ -1,11 +1,30 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC ### DPO shared bootstrap
-# MAGIC Run by every other notebook with `%run ./_common`.
+# MAGIC # _common · Shared bootstrap (do not run on its own)
 # MAGIC
-# MAGIC **The profile is picked automatically**: the profile in `config/environments/` whose `workspace_hosts`
-# MAGIC lists this workspace wins (job parameter or the `DPO_PROFILE` env var override it). You only touch the
-# MAGIC `profile` widget to deliberately run another profile. Blank widgets take the profile's values.
+# MAGIC Every DPO notebook starts with `%run ./_common`. It prepares the same environment everywhere, so a notebook
+# MAGIC behaves identically in a Git folder, in a bundle deployment and in a scheduled job.
+# MAGIC
+# MAGIC | | |
+# MAGIC |---|---|
+# MAGIC | **What it does** | finds the project folder, imports `src/dpo`, detects which profile fits this workspace, creates the shared widgets, builds and validates the configuration (`cfg`) |
+# MAGIC | **Defines** | `REPO_ROOT`, `HOST`, `cfg`, `CFG_ERROR`, `build_cfg(**overrides)`, `forecast_warehouse(cfg)` |
+# MAGIC | **Reads** | `config/environments/<profile>.json`, `config/rules.json` |
+# MAGIC | **Writes** | nothing |
+# MAGIC
+# MAGIC **Profile selection.** The profile in `config/environments/` whose `workspace_hosts` lists this workspace is
+# MAGIC chosen automatically. A job parameter, the `profile` widget or the `DPO_PROFILE` environment variable can override
+# MAGIC it; the pipeline then re-checks on every run that the profile is allowed in this workspace (runtime guard).
+# MAGIC
+# MAGIC **Widgets.** Leave them blank to use the profile's values. Values typed here are validated (allow-listed
+# MAGIC characters, ranges, date format) before any SQL is built from them.
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### 1 · Locate the project and import the DPO package
+# MAGIC Works from a Git folder and from a bundle deployment (`<root>/files/...`). `src/` is put on the Python path, and
+# MAGIC the modules are reloaded so edits in `src/` take effect without detaching the notebook.
 
 # COMMAND ----------
 
@@ -37,13 +56,21 @@ if SRC not in sys.path:
 # Reload so edits in src/ are picked up without detaching the notebook
 import importlib
 import dpo, dpo.config, dpo.transforms, dpo.synth, dpo.pipeline, dpo.rules, dpo.recommend, dpo.validation, \
-    dpo.governance, dpo.installer
+    dpo.governance, dpo.installer, dpo.forecast, dpo.selfcost
 for m in (dpo.config, dpo.transforms, dpo.synth, dpo.pipeline, dpo.rules, dpo.recommend, dpo.validation,
-          dpo.governance, dpo.installer):
+          dpo.governance, dpo.installer, dpo.forecast, dpo.selfcost):
     importlib.reload(m)
 
 from dpo.config import DPOConfig, PROFILE_DIR, detect_profile
 
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### 2 · Detect this workspace and pick the profile
+# MAGIC The host comes from Spark, the notebook context or the SDK, in that order. `detect_profile` matches it against each
+# MAGIC profile's `workspace_hosts`; no match falls back to `free_edition`.
+
+# COMMAND ----------
 
 def workspace_host():
     """This workspace's host name, or None. Tries Spark conf, then the notebook context."""
@@ -71,6 +98,15 @@ AUTO_PROFILE, AUTO_REASON = detect_profile(HOST)
 if AUTO_PROFILE not in PROFILES:
     AUTO_PROFILE = "free_edition"
 
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### 3 · Shared widgets
+# MAGIC `profile` is pre-selected from step 2. All others are optional overrides of the profile. `warehouse_id` is the SQL
+# MAGIC warehouse `ai_forecast` runs on; the scheduled job passes the bundle's warehouse here.
+
+# COMMAND ----------
+
 dbutils.widgets.dropdown("profile", AUTO_PROFILE, PROFILES, "Profile (auto-detected)")
 dbutils.widgets.text("catalog", "", "Catalog (blank = profile)")
 dbutils.widgets.text("schema_prefix", "", "Schema prefix (blank = profile)")
@@ -78,7 +114,33 @@ dbutils.widgets.dropdown("source_mode", "", ["", "synthetic", "system"], "Source
 dbutils.widgets.text("lookback_days", "", "Look-back days (blank = profile)")
 dbutils.widgets.text("end_date", "", "End date YYYY-MM-DD (blank = today)")
 dbutils.widgets.text("inventory_catalogs", "", "Catalogs to scan for layout (comma list)")
+dbutils.widgets.text("warehouse_id", "", "SQL warehouse id for ai_forecast (blank = first serverless)")
 
+
+def forecast_warehouse(cfg) -> str:
+    """ai_forecast runs only on a Pro/serverless SQL warehouse: the job passes one (bundle var.warehouse_id),
+    otherwise the first serverless warehouse visible to this identity. "" = baseline forecast."""
+    wh = dbutils.widgets.get("warehouse_id").strip()
+    if wh or not (cfg.forecast_enabled and cfg.forecast_method == "ai_forecast"):
+        return wh
+    try:
+        from databricks.sdk import WorkspaceClient
+        from dpo.dashboard import find_warehouse
+        return find_warehouse(WorkspaceClient())
+    except Exception as exc:
+        print(f"No SQL warehouse for ai_forecast ({type(exc).__name__}); the baseline forecast will be used.")
+        return ""
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### 4 · Build and validate the configuration
+# MAGIC `build_cfg()` merges profile + non-empty widgets (+ explicit overrides used by the test notebooks), then
+# MAGIC `validate()` rejects anything unsafe: illegal identifiers, unbound hosts, external AI endpoints, bad dates, test
+# MAGIC hooks against a real metastore. A notebook that sets `DPO_DEFER_CFG_ERRORS = True` (the installer) gets the error
+# MAGIC in `CFG_ERROR` to show it nicely instead of a stack trace.
+
+# COMMAND ----------
 
 def build_cfg(**overrides) -> DPOConfig:
     w = dbutils.widgets.get
@@ -95,6 +157,7 @@ def build_cfg(**overrides) -> DPOConfig:
     cfg.rules_path = os.path.join(REPO_ROOT, "config", "rules.json")
     if "schema_prefix" in overrides:            # an explicit "" must win over the profile
         cfg.schema_prefix = overrides["schema_prefix"]
+    cfg.forecast_warehouse_id = forecast_warehouse(cfg)
     cfg.validate()
     return cfg
 

@@ -34,7 +34,7 @@ RESERVED_COLUMNS = ("source",)
 # layers each dashboard may read; enforced by tests/test_dashboard.py
 ALLOWED_LAYERS = {"cost_optimization": ("reporting",), "engineering": ("gold", "ops")}
 
-BLUE, ORANGE, INK = "#1F4E99", "#C2551A", "#15191E"
+BLUE, ORANGE, INK, RED = "#1F4E99", "#C2551A", "#15191E", "#B3261E"
 PALETTE = [BLUE, "#E0A030", "#2E8B57", ORANGE, "#7FA7D9", "#8A3A0B", "#99C9A6", "#F2B8A0", "#919191", "#5B6B7A"]
 CURRENCY_SYMBOL = {"USD": "$", "EUR": "€", "GBP": "£", "INR": "₹", "AUD": "A$", "CAD": "C$"}
 
@@ -94,6 +94,24 @@ FROM (SELECT row_number() OVER (ORDER BY score DESC, finding_id) AS backlog_rank
 LATERAL VIEW stack(4, 'Value 0.35·V', v, 'Confidence 0.25·C', c,
                       'Feasibility 0.20·F', f, 'Reversibility 0.20·R', r) s AS component, weighted
 WHERE backlog_rank <= 15"""),
+        "ds_budget": ("Budget outlook", f"""
+SELECT cost_center, status, budget, round(actual_mtd, 2) AS actual_mtd,
+       round(forecast_remaining, 2) AS forecast_remaining, round(projected_total, 2) AS projected_total,
+       round(projected_lower, 2) AS projected_lower, round(projected_upper, 2) AS projected_upper,
+       round(pct_of_budget * 100, 1) AS pct_of_budget, round(budget_gap, 2) AS budget_gap,
+       greatest(coalesce(budget_gap, 0), 0) AS overrun, days_remaining, month_start, as_of_date, method,
+       CASE WHEN status IN ('OVER_BUDGET', 'AT_RISK') THEN 1 ELSE 0 END AS is_at_risk,
+       CASE status WHEN 'OVER_BUDGET' THEN 1 WHEN 'AT_RISK' THEN 2 WHEN 'WATCH' THEN 3
+                   WHEN 'ON_TRACK' THEN 4 ELSE 5 END AS status_order
+FROM {r('budget_outlook')}"""),
+        "ds_forecast": ("Actual vs forecast", f"""
+SELECT usage_date AS day, cost_center, 'Actual' AS series, sum(cost) AS cost
+FROM {r('cost_by_dimension')} GROUP BY usage_date, cost_center
+UNION ALL
+SELECT forecast_date, cost_center, s.series, s.cost
+FROM {r('cost_forecast')}
+LATERAL VIEW stack(3, 'Forecast', cost_forecast, 'Forecast high', cost_upper,
+                      'Forecast low', cost_lower) s AS series, cost"""),
     }
 
     eng = {
@@ -136,6 +154,17 @@ FROM {o('dq_report')} WHERE run_id = {latest('dq_report')}"""),
         "ds_rules": ("Rule status", f"""
 SELECT rule_id, status, findings, round(seconds, 2) AS seconds, message
 FROM {o('rule_status')} WHERE run_id = {latest('run_log')}"""),
+        "ds_self_summary": ("DPO cost summary", f"""
+SELECT dpo_monthly_cost, jobs_monthly, sql_monthly, tagged_monthly,
+       round(share_of_total_spend * 100, 3) AS share_of_spend_pct, est_monthly_savings,
+       p1_est_monthly_savings, savings_to_cost_ratio, dpo_job_runs, window_days, computed_at
+FROM {g('dpo_cost_summary')}"""),
+        "ds_self_daily": ("DPO cost by day", f"""
+SELECT usage_date, component, item, product, cost, dbus FROM {g('dpo_cost_daily')}"""),
+        "ds_self_runs": ("DPO job runs", f"""
+SELECT job_name, job_run_id, start_time, result_state, round(duration_s / 60.0, 1) AS minutes,
+       round(cost, 4) AS cost, round(dbus, 3) AS dbus
+FROM {g('dpo_run_cost')}"""),
     }
     return {"cost_optimization": cost, "engineering": eng}
 
@@ -157,10 +186,12 @@ class _Builder:
         return {"x": x, "y": y, "width": w, "height": h}
 
     def text(self, name, lines, x, y, w, h):
+        """Markdown text box."""
         return {"widget": {"name": self._name(name), "multilineTextboxSpec": {"lines": lines}},
                 "position": self._pos(x, y, w, h)}
 
     def counter(self, name, ds, expr, title, x, y, w=1, h=2, desc=None):
+        """Single-number KPI widget."""
         n = self._name(name)
         frame = {"showTitle": True, "title": title}
         if desc:
@@ -177,6 +208,7 @@ class _Builder:
 
     def bar(self, name, ds, x_field, y_expr, title, x, y, w, h, color=None, x_scale="categorical",
             x_title=None, y_title=None, desc=None):
+        """Bar chart, optionally coloured by a field."""
         fields = [{"name": x_field, "expression": f"`{x_field}`"}, {"name": "y", "expression": y_expr}]
         enc = {"x": {"fieldName": x_field, "displayName": x_title or x_field, "scale": {"type": x_scale},
                      "axis": {"title": x_title or x_field}},
@@ -196,7 +228,15 @@ class _Builder:
                      "mark": {"colors": PALETTE}}},
             "position": self._pos(x, y, w, h)}
 
+    def line(self, name, ds, x_field, y_expr, color, title, x, y, w, h, x_title=None, y_title=None, desc=None):
+        """Line chart over a temporal x axis, one line per value of `color`."""
+        spec = self.bar(name, ds, x_field, y_expr, title, x, y, w, h, color=color, x_scale="temporal",
+                        x_title=x_title, y_title=y_title, desc=desc)
+        spec["widget"]["spec"]["widgetType"] = "line"
+        return spec
+
     def scatter(self, name, ds, xf, yf, color, title, x, y, w, h, x_title, y_title, desc=None):
+        """Scatter plot coloured by a field."""
         frame = {"showTitle": True, "title": title}
         if desc:
             frame.update(showDescription=True, description=desc)
@@ -336,10 +376,43 @@ def _cost_pages(cfg: DPOConfig) -> list[dict]:
         b.bar("rec_score_parts", "ds_score_parts", "finding", "SUM(`weighted`)", "Score breakdown, top 15",
               3, 13, 3, 7, color="component", x_title="Finding", y_title="Weighted score"),
     ]
+    status_fmt = {"default": {"foregroundColor": INK}, "rules": [
+        {"if": {"column": "status", "fn": "=", "literal": "OVER_BUDGET"}, "value": {"foregroundColor": RED}},
+        {"if": {"column": "status", "fn": "=", "literal": "AT_RISK"}, "value": {"foregroundColor": ORANGE}},
+        {"if": {"column": "status", "fn": "=", "literal": "WATCH"}, "value": {"foregroundColor": ORANGE}}]}
+    budget = [
+        b.text("bf_header", [
+            "## Budget & forecast",
+            "Spend so far this month plus the forecast for the remaining days, per cost centre, against the "
+            "monthly budget in the profile. **OVER_BUDGET** already above · **AT_RISK** projection above · "
+            "**WATCH** only the upper bound above · **ON_TRACK**.",
+            "Method `ai_forecast` = Databricks AI forecasting on the SQL warehouse; `baseline` = weekday "
+            "average (used when AI forecasting is unavailable). Forecasts are estimates: read the range."],
+            0, 0, 6, 2),
+        b.filter("bf_f_cc", "multi-select", "cost_center", "Cost center", ("ds_budget", "ds_forecast"), 0, 2),
+        b.counter("bf_k_risk", "ds_budget", "SUM(`is_at_risk`)", "Cost centres over or at risk", 2, 2, 1, 2),
+        b.counter("bf_k_projected", "ds_budget", "SUM(`projected_total`)", f"Projected month ({cur})", 3, 2, 1, 2),
+        b.counter("bf_k_budget", "ds_budget", "SUM(`budget`)", f"Budget ({cur})", 4, 2, 1, 2,
+                  desc="Cost centres with a budget in the profile"),
+        b.counter("bf_k_overrun", "ds_budget", "SUM(`overrun`)", f"Projected overrun ({cur})", 5, 2, 1, 2),
+        b.table("bf_outlook", "ds_budget", [
+            ("cost_center", "Cost center", "string"), ("status", "Status", "string", status_fmt),
+            ("budget", "Budget", "money"), ("actual_mtd", "Spent so far", "money"),
+            ("forecast_remaining", "Forecast rest of month", "money"),
+            ("projected_total", "Projected month", "money"), ("projected_lower", "Low", "money"),
+            ("projected_upper", "High", "money"), ("pct_of_budget", "% of budget", "pct", _over("pct_of_budget", 100)),
+            ("budget_gap", "Gap to budget", "money"), ("days_remaining", "Days left", "int"),
+            ("method", "Method", "string")],
+            "Budget outlook this month", 0, 4, 6, 6, desc="Worst first: sort by status"),
+        b.line("bf_actual_forecast", "ds_forecast", "day", "SUM(`cost`)", "series", "Daily cost: actual and forecast",
+               0, 10, 6, 7, x_title="Day", y_title=f"Cost ({cur})",
+               desc="Forecast high / low = prediction interval; pick one cost centre for a clear view"),
+    ]
     return [
         {"name": "overview", "displayName": "Overview", "pageType": "PAGE_TYPE_CANVAS", "layout": overview},
         {"name": "recommendations", "displayName": "Recommendations", "pageType": "PAGE_TYPE_CANVAS",
          "layout": recs},
+        {"name": "budget", "displayName": "Budget & forecast", "pageType": "PAGE_TYPE_CANVAS", "layout": budget},
     ]
 
 
@@ -403,15 +476,41 @@ def _engineering_pages(cfg: DPOConfig) -> list[dict]:
             ("seconds", "Seconds", "float"), ("message", "Message", "string")], "Rule status (latest run)",
             0, 17, 6, 7),
     ]
+    self_cost = [
+        b.text("sc_header", [
+            "## What DPO itself costs",
+            "DPO runs on Databricks, so its own jobs and the dashboard / Genie queries on DPO tables are billed "
+            "too. **jobs** = DPO's jobs (pipeline, install, governance, tests) · **sql** = warehouse cost of queries "
+            "that read DPO schemas · **tagged** = other usage tagged `app=dpo-accelerator`.",
+            "Billing lags a few hours: today's runs fill in on the next run. Pay-per-token AI calls billed only to "
+            "the model endpoint are not included (see the `narrate` row of the run log for call counts)."], 0, 0, 6, 2),
+        b.counter("sc_k_cost", "ds_self_summary", "SUM(`dpo_monthly_cost`)", f"DPO cost / month ({cur})", 0, 2, 2, 2),
+        b.counter("sc_k_savings", "ds_self_summary", "SUM(`est_monthly_savings`)",
+                  f"Est. savings found / month ({cur})", 2, 2, 2, 2, desc="Unvalidated estimate"),
+        b.counter("sc_k_ratio", "ds_self_summary", "SUM(`savings_to_cost_ratio`)", "Savings-to-cost ratio", 4, 2, 1, 2,
+                  desc="Estimated savings ÷ DPO cost"),
+        b.counter("sc_k_share", "ds_self_summary", "SUM(`share_of_spend_pct`)", "DPO share of all spend (%)", 5, 2, 1, 2),
+        b.bar("sc_daily", "ds_self_daily", "usage_date", "SUM(`cost`)", "DPO cost by day and component",
+              0, 4, 4, 6, color="component", x_scale="temporal", x_title="Day", y_title=f"Cost ({cur})"),
+        b.bar("sc_items", "ds_self_daily", "item", "SUM(`cost`)", "By job or client", 4, 4, 2, 6,
+              color="component", x_title="Job / client", y_title=f"Cost ({cur})"),
+        b.table("sc_runs", "ds_self_runs", [
+            ("start_time", "Started", "datetime"), ("job_name", "Job", "string"),
+            ("result_state", "Result", "string"), ("minutes", "Minutes", "float"), ("cost", "Cost", "money"),
+            ("dbus", "DBUs", "float"), ("job_run_id", "Run id", "string")],
+            "Cost per DPO job run", 0, 10, 6, 7),
+    ]
     return [
         {"name": "jobs_queries", "displayName": "Jobs & queries", "pageType": "PAGE_TYPE_CANVAS", "layout": jobs},
         {"name": "pipeline_health", "displayName": "Pipeline health", "pageType": "PAGE_TYPE_CANVAS",
          "layout": health},
+        {"name": "dpo_cost", "displayName": "DPO's own cost", "pageType": "PAGE_TYPE_CANVAS", "layout": self_cost},
     ]
 
 
 # ================================================================== build ==
 def build(cfg: DPOConfig, key: str) -> dict:
+    """Build the definition for one profile and key (deterministic: same input, identical output)."""
     ds = datasets(cfg)[key]
     pages = _cost_pages(cfg) if key == "cost_optimization" else _engineering_pages(cfg)
     return {
@@ -423,14 +522,17 @@ def build(cfg: DPOConfig, key: str) -> dict:
 
 
 def render(cfg: DPOConfig, key: str) -> str:
+    """Serialised definition, as written to the generated file."""
     return json.dumps(build(cfg, key), indent=2, ensure_ascii=False) + "\n"
 
 
 def file_path(root: str, profile: str, key: str) -> str:
+    """Path of the generated file for a profile and key."""
     return os.path.join(root, "dashboards", profile, f"{key}.lvdash.json")
 
 
 def write_all(root: str, profiles: Optional[list[str]] = None) -> list[str]:
+    """Regenerate the files for every profile (or the given ones) and return their paths."""
     env_dir = os.path.join(root, "config", "environments")
     profiles = profiles or sorted(f[:-5] for f in os.listdir(env_dir) if f.endswith(".json"))
     out = []

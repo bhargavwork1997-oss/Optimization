@@ -47,6 +47,7 @@ def accounting(ctx) -> list[tuple]:
 
 
 def scoring(ctx) -> list[tuple]:
+    """Scores within 0-100, finding ids unique, ranks contiguous from 1."""
     r = ctx.read("gold", "recommendations")
     bad = r.filter((F.col("score") < 0) | (F.col("score") > 100) | F.col("score").isNull()).count()
     dup = r.count() - r.select("finding_id").distinct().count()
@@ -58,6 +59,7 @@ def scoring(ctx) -> list[tuple]:
 
 
 def pipeline_health(ctx) -> list[tuple]:
+    """No rule ended in ERROR in ops.rule_status."""
     st = ctx.spark.table(ctx.cfg.t("ops", "rule_status")).filter(F.col("status") == "ERROR").collect()
     return [("no_rule_errors", not st, f"errors={[(r.rule_id, r.message[:120]) for r in st]}")]
 
@@ -98,6 +100,7 @@ def snapshot(ctx) -> dict:
 
 
 def run_all_checks(ctx, injected: dict | None = None, skip_rules: tuple = (), strict: bool = True):
+    """All validation checks for a finished run (recall against ground truth when injected scenarios exist)."""
     res = detection(ctx, skip_rules, strict) + accounting(ctx) + scoring(ctx) + pipeline_health(ctx)
     if injected:
         res += dq_expectations(ctx, injected)

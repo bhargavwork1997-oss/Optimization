@@ -18,7 +18,7 @@
     "R16_SQL_ANTI_PATTERN": 1,
     "R17_REPLATFORM_CANDIDATE": 1
   },
-  "total_cost": 12899.3,
+  "total_cost": 12904.97,
   "top10_finding_ids": [
     "b7635417b036f356",
     "5c45d65922557990",

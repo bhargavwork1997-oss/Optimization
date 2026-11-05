@@ -97,3 +97,21 @@ def test_score_formula_matches_playbook():
     w = local_cfg().weights
     assert w == {"V": 0.35, "C": 0.25, "F": 0.20, "R": 0.20}
     assert round(w["V"] * 100 + w["C"] * 100 + w["F"] * 100 + w["R"] * 100, 6) == 100
+
+
+def test_inventory_escapes_backticks_in_metadata_names():
+    """Table names come from information_schema, i.e. from anyone with CREATE TABLE."""
+    from types import SimpleNamespace as NS
+    from dpo.pipeline import collect_table_inventory
+    seen = []
+
+    class FakeSpark:
+        def sql(self, q):
+            seen.append(q)
+            if "information_schema" in q:
+                return NS(collect=lambda: [NS(table_catalog="c", table_schema="s",
+                                              table_name="t` ; DROP TABLE x; --", table_owner="o")])
+            return NS(collect=lambda: [{"format": "parquet"}])
+    ctx = NS(spark=FakeSpark(), cfg=NS(inventory_catalogs=["c"], inventory_max_tables=10))
+    assert collect_table_inventory(ctx) is None
+    assert seen[1] == "DESCRIBE DETAIL `c`.`s`.`t`` ; DROP TABLE x; --`"

@@ -29,7 +29,7 @@ def test_all_checks_pass(ctx):
 
 
 def test_every_stage_logged_success(ctx):
-    assert [l["stage"] for l in ctx.log] == ["bronze", "silver", "gold", "rules", "recommend", "narrate", "govern"]
+    assert [l["stage"] for l in ctx.log] == ["bronze", "silver", "gold", "rules", "recommend", "narrate", "forecast", "self_cost", "govern"]
     assert all(l["status"] == "SUCCESS" for l in ctx.log)
 
 
