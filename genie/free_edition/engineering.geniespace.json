@@ -56,8 +56,8 @@
         "column_configs": [
           {
             "column_name": "run_as",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           }
         ]
       },

@@ -354,3 +354,23 @@ def test_publish_genie_spaces_creates_updates_sets_acl_and_respects_bundle():
     n = len(calls["create"]) + len(calls["update"])
     assert all("asset bundle" in o["action"] for o in genie.publish_genie_spaces(cfg, sdk, root, "/x"))
     assert len(calls["create"]) + len(calls["update"]) == n
+
+
+def test_install_regenerates_stale_synthetic_data(spark):
+    """Synthetic data left by an earlier install ends before today's window: reusing it would leave the
+    recent days empty and hide time-based findings (R08 runtime regression, R09 cost spike)."""
+    from dpo import installer, synth
+    old = local_cfg(prefix="inststale_", end_date="2026-10-20")
+    synth.generate(spark, old, "small", seed=42, end_date="2026-10-20")
+
+    def gen_step(cfg):
+        steps = installer.build_plan(spark, cfg, "stale", include_lab=False, include_tests=False)
+        return next(s for s in steps if s.key == "synthetic_data").fn()
+
+    fresh = local_cfg(prefix="inststale_", end_date="2026-10-21")      # one day later: still current
+    assert "reused" in gen_step(fresh)
+    later = local_cfg(prefix="inststale_", end_date="2026-11-05")
+    out = gen_step(later)
+    assert "reused" not in out and out["billing_usage"] > 0
+    last = spark.sql("SELECT max(usage_date) FROM inststale_sim.billing_usage").collect()[0][0]
+    assert str(last) >= "2026-11-04"

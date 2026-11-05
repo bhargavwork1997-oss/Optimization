@@ -43,9 +43,10 @@ The text appears in the **Why flagged** column of the Recommendations page and i
    action. It never gets workload IDs, cost centres, job names, users, SQL text or evidence JSON.
 2. **Injection-resistant prompt.** The data is wrapped in `<data>` tags and declared untrusted; the model
    must not invent numbers, names, savings or SQL.
-3. **Output validation.** A reply is used only if it contains all four labels, is at most 1,200 characters
-   and contains no links or echoed tags. Anything else is discarded and the template is kept
-   (`ai_rejected` in the run log).
+3. **Output validation.** Markdown and numbering are stripped first (models often answer
+   `1. **Root cause:** ...`). The reply is then used only if it contains all four labels, is at most 1,200
+   characters and contains no links or echoed tags. Anything else is discarded and the template is kept; the
+   run log counts rejections per reason (`ai_rejected_reasons`, e.g. `{"missing Risk:": 3}`), never the text.
 4. **Cache.** Accepted narratives are stored in `gold.ai_narrative_cache`, keyed by a SHA-256 hash of
    (endpoint, prompt version, input). An unchanged finding is not sent again, so the text stays the same
    from day to day and repeat runs cost no tokens. Entries expire after 90 days; changing the prompt

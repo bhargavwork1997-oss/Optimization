@@ -99,7 +99,8 @@ def _lines(text: str) -> list[str]:
 
 
 def _off(col: str) -> dict:
-    return {"column_name": col, "get_example_values": False, "build_value_dictionary": False}
+    # serialized_space version 2 names; the API rejects the v1 names get_example_values/build_value_dictionary
+    return {"column_name": col, "enable_format_assistance": False, "enable_entity_matching": False}
 
 
 # ============================================================== content ==

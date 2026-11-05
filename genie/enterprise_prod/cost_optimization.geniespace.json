@@ -47,83 +47,83 @@
         "column_configs": [
           {
             "column_name": "actual_mtd",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "as_of_date",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "budget",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "budget_gap",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "cost_center",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "days_remaining",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "forecast_remaining",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "method",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "month_end",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "month_start",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "mtd_complete",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "pct_of_budget",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "projected_lower",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "projected_total",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "projected_upper",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "status",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           }
         ]
       },
@@ -132,43 +132,43 @@
         "column_configs": [
           {
             "column_name": "billing_origin_product",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "cost",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "cost_center",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "dbus",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "run_as",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "sku_name",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "usage_date",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "workspace_id",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           }
         ]
       },
@@ -177,33 +177,33 @@
         "column_configs": [
           {
             "column_name": "cost_center",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "cost_forecast",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "cost_lower",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "cost_upper",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "forecast_date",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "method",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           }
         ]
       },
@@ -212,63 +212,63 @@
         "column_configs": [
           {
             "column_name": "cost_center",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "cost_per_success",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "failed",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "failure_rate",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "job_id",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "job_name",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "monthly_cost",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "p50_duration_s",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "p95_duration_s",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "runs",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "succeeded",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "window_cost",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           }
         ]
       },
@@ -277,43 +277,43 @@
         "column_configs": [
           {
             "column_name": "cost_center",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "finding_id",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "narrative",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "narrative_source",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "priority",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "rank",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "rule_id",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "workload_key",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           }
         ]
       },
@@ -322,163 +322,163 @@
         "column_configs": [
           {
             "column_name": "C",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "F",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "R",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "V",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "action",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "category",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "confidence",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "cost_center",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "detected_at",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "est_monthly_savings",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "evidence",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "feasibility",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "finding_id",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "metric_name",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "metric_value",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "period_end",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "period_start",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "priority",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "rank",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "reversibility",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "rule_id",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "run_id",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "savings_rank",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "score",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "severity",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "severity_score",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "status",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "threshold",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "title",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "validation_required",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "workload_key",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "workload_type",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           }
         ]
       },
@@ -487,58 +487,58 @@
         "column_configs": [
           {
             "column_name": "active_days",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "attribution_types",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "cost_center",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "cost_rank",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "monthly_cost",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "share_of_total",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "untagged_cost",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "window_cost",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "window_dbus",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "workload_key",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           },
           {
             "column_name": "workload_type",
-            "get_example_values": false,
-            "build_value_dictionary": false
+            "enable_format_assistance": false,
+            "enable_entity_matching": false
           }
         ]
       }

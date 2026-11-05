@@ -109,10 +109,12 @@ def test_no_value_sampling_on_secured_views(profile):
         layer_name = next(k for k in TABLES["cost_optimization"] if cfg.t(*k) == t["identifier"])
         cols = {c["column_name"]: c for c in t["column_configs"]}
         assert set(cols) == set(TABLES["cost_optimization"][layer_name]), t["identifier"]
-        assert all(c["get_example_values"] is False and c["build_value_dictionary"] is False for c in cols.values())
+        assert all(c["enable_format_assistance"] is False and c["enable_entity_matching"] is False
+                   for c in cols.values())
+        assert not any(k in c for c in cols.values() for k in ("get_example_values", "build_value_dictionary"))
     eng = {t["identifier"]: t for t in build(cfg, "engineering")["data_sources"]["tables"]}
     run_as = {c["column_name"]: c for c in eng[cfg.t("gold", "cost_by_dimension")]["column_configs"]}["run_as"]
-    assert run_as["get_example_values"] is False and run_as["build_value_dictionary"] is False
+    assert run_as["enable_format_assistance"] is False and run_as["enable_entity_matching"] is False
 
 
 @pytest.mark.parametrize("profile", PROFILES)

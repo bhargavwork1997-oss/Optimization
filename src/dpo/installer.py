@@ -15,6 +15,7 @@ features fall back to non-AI output, so they never block an install.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import re
 import time
@@ -385,8 +386,15 @@ def build_plan(spark, cfg: DPOConfig, run_id: str, run_notebook: Optional[Callab
         include_tests = (not cfg.governance["enforce"]) or bool(cfg.governance.get("operators_can_create_schemas"))
 
     def gen():
-        if not regenerate_synthetic and _exists(spark, cfg.t("sim", "billing_usage")):
-            return {"reused": "existing synthetic data"}
+        # Reuse existing synthetic data only if it reaches the end of the analysis window. Older data
+        # (e.g. from an earlier install) leaves the recent days empty and silently hides time-based
+        # findings such as cost spikes (R09) and runtime regressions (R08).
+        end = dt.date.fromisoformat(cfg.end_date) if cfg.end_date else dt.date.today()   # as synth and Ctx
+        name = cfg.t("sim", "billing_usage")
+        if not regenerate_synthetic and _exists(spark, name):
+            last = spark.sql(f"SELECT max(usage_date) AS d FROM {name}").collect()[0]["d"]
+            if last is not None and last >= end - dt.timedelta(days=1):
+                return {"reused": f"existing synthetic data up to {last}"}
         return synth.generate(spark, cfg, scale="small", seed=42, end_date=cfg.end_date)["tables"]
 
     def run_pipe():

@@ -218,3 +218,24 @@ def test_gate_reports_ai_readiness_as_warnings_only():
     good = NS(serving_endpoints=NS(get=lambda n: NS(state=NS(ready=NS(value="READY")))),
               warehouses=NS(list=lambda: [NS(enable_serverless_compute=True)]))
     assert all(r[1] == "OK" for r in installer.check_ai_features(cfg, good))
+
+
+def test_markdown_answers_are_cleaned_and_rejections_explained(spark, built):
+    """Models often answer '1. **Root cause:** ...'. That is a valid answer: keep it, minus the markup.
+    Answers that really miss a label are rejected, and the run log says why (counts only, no model text)."""
+    from dpo.recommend import clean_narrative, rejection_reason
+    md = ("1. **Root cause:** avg_cpu_pct stays low.\n2. **Fix**: lower auto_termination_minutes.\n"
+          "3. **Validation:** compare two weeks.\n4. **Risk:** slower start; revert.")
+    clean = clean_narrative(md)
+    assert rejection_reason(clean) is None and "**" not in clean and "avg_cpu_pct" in clean
+    assert clean.splitlines()[0] == "Root cause: avg_cpu_pct stays low."
+    cfg = copy.deepcopy(built)
+    cfg.ai_enabled, cfg.ai_max_rows = True, 4
+    spark.sql(f"DROP TABLE IF EXISTS {cfg.t('gold', 'ai_narrative_cache')}")
+    stats, _ = _narrate(spark, cfg, lambda req: md, "ai-md")
+    assert stats["ai_generated"] == 4 and stats["ai_rejected"] == 0
+    shown = spark.table(cfg.t("gold", "recommendation_narratives")).filter("narrative_source = 'ai_query'").first()
+    assert "**" not in shown.narrative and "1." not in shown.narrative.split("] ", 1)[1][:3]
+    spark.sql(f"DROP TABLE IF EXISTS {cfg.t('gold', 'ai_narrative_cache')}")
+    stats, _ = _narrate(spark, cfg, lambda req: "Root cause: x\nFix: y\nValidation: z", "ai-miss")
+    assert stats["ai_rejected"] == 4 and stats["ai_rejected_reasons"] == {"missing Risk:": 4}
