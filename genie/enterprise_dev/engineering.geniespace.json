@@ -1,0 +1,412 @@
+{
+  "version": 2,
+  "config": {
+    "sample_questions": [
+      {
+        "id": "05d6a663870697bff9b2786da6ddc1ae",
+        "question": [
+          "What does DPO itself cost and does it pay for itself?"
+        ]
+      },
+      {
+        "id": "1bfe855b8813d25626fcb2c6f4eaedad",
+        "question": [
+          "Which jobs have the highest cost per successful run?"
+        ]
+      },
+      {
+        "id": "60dadc9309803e2e5aef48b2149d6596",
+        "question": [
+          "Which rules produced the most findings?"
+        ]
+      },
+      {
+        "id": "93405090ab26f8627ea0f212fd9c170f",
+        "question": [
+          "Which query shapes scan the most data without pruning?"
+        ]
+      },
+      {
+        "id": "a83e3326f3b82e27a5130655c6398d63",
+        "question": [
+          "How much spend is idle or allocated rather than direct?"
+        ]
+      },
+      {
+        "id": "ada1ea067269c8f1ad193a66f8c21bf8",
+        "question": [
+          "Which sources were missing in the latest run?"
+        ]
+      },
+      {
+        "id": "c037ea24b2bfa86b1241de112d22b42f",
+        "question": [
+          "Did the latest DPO pipeline run succeed?"
+        ]
+      }
+    ]
+  },
+  "data_sources": {
+    "tables": [
+      {
+        "identifier": "dpo_dev.gold.budget_outlook"
+      },
+      {
+        "identifier": "dpo_dev.gold.cost_by_dimension",
+        "column_configs": [
+          {
+            "column_name": "run_as",
+            "get_example_values": false,
+            "build_value_dictionary": false
+          }
+        ]
+      },
+      {
+        "identifier": "dpo_dev.gold.cost_forecast"
+      },
+      {
+        "identifier": "dpo_dev.gold.dpo_cost_daily"
+      },
+      {
+        "identifier": "dpo_dev.gold.dpo_cost_summary"
+      },
+      {
+        "identifier": "dpo_dev.gold.dpo_run_cost"
+      },
+      {
+        "identifier": "dpo_dev.gold.job_scorecard"
+      },
+      {
+        "identifier": "dpo_dev.gold.query_fingerprint_stats"
+      },
+      {
+        "identifier": "dpo_dev.gold.recommendation_narratives"
+      },
+      {
+        "identifier": "dpo_dev.gold.recommendations"
+      },
+      {
+        "identifier": "dpo_dev.gold.run_cost"
+      },
+      {
+        "identifier": "dpo_dev.gold.workload_cost_daily"
+      },
+      {
+        "identifier": "dpo_dev.gold.workload_summary"
+      },
+      {
+        "identifier": "dpo_dev.ops.dq_report"
+      },
+      {
+        "identifier": "dpo_dev.ops.rule_status"
+      },
+      {
+        "identifier": "dpo_dev.ops.run_log"
+      },
+      {
+        "identifier": "dpo_dev.ops.source_status"
+      }
+    ]
+  },
+  "instructions": {
+    "text_instructions": [
+      {
+        "id": "43fa177d8262d92e413de74d5ef5913e",
+        "content": [
+          "You answer questions about Databricks cost and the DPO optimisation backlog. All money is in USD.\n",
+          "Data covers a rolling 30-day window; monthly_cost is the window cost scaled to 30 days.\n",
+          "Scoring: score = 0.35*V + 0.25*C + 0.20*F + 0.20*R (V value, C confidence, F feasibility, R reversibility,\n",
+          "each 0-1). Priority: P1 if score >= 0.75, P2 if >= 0.60, else P3. Order backlogs by score DESC, finding_id.\n",
+          "est_monthly_savings is a hypothesis until a benchmark validates it: always call it \"estimated\" and never\n",
+          "add it up as guaranteed savings. status NEEDS_REVIEW means nobody has validated the finding yet.\n",
+          "workload_key is '<type>:<id>', e.g. 'job:123', 'cluster:abc', 'query:<fingerprint>', 'warehouse:<id>'.\n",
+          "A NULL cost_center is untagged spend: show it as '(untagged)'.\n",
+          "Rule ids R01-R17 (rule_id like 'R01_COMPUTE_IDLE'): R01 idle all-purpose cluster, R02 oversized job\n",
+          "cluster, R03 auto-termination, R04 old runtime, R05 job on all-purpose compute, R06 job failure rate,\n",
+          "R07 task skew, R08 runtime regression, R09 daily cost spike, R10 untagged spend, R11 no file pruning,\n",
+          "R12 spill, R13 repeated query without cache, R14 warehouse queuing, R15 small files, R16 SQL anti-pattern,\n",
+          "R17 plain file copy that could move to native cloud copy tools.\n",
+          "Budget outlook (budget_outlook, one row per cost centre for the current month): actual_mtd is spend so\n",
+          "far this month, forecast_remaining the forecast for the rest of the month, projected_total = actual_mtd +\n",
+          "forecast_remaining, projected_lower/projected_upper the prediction interval. status: OVER_BUDGET (already\n",
+          "above budget), AT_RISK (projection above budget), WATCH (only the upper bound is above), ON_TRACK, NO_BUDGET\n",
+          "(no budget set). method says how the forecast was made: ai_forecast (Databricks AI forecasting) or baseline\n",
+          "(weekday average). cost_forecast holds the daily forecast with lower and upper bounds. Forecasts are\n",
+          "estimates: always give the range, not just the point value.\n",
+          "Never write INSERT, UPDATE, DELETE, MERGE, CREATE, DROP, GRANT or any other statement that changes data\n",
+          "or access. Answer with SELECT queries only.\n",
+          "Tables: gold.recommendations = scored backlog; gold.recommendation_narratives = explanation per finding;\n",
+          "gold.workload_summary and gold.workload_cost_daily = cost per workload (attribution direct, allocated or\n",
+          "idle); gold.job_scorecard = job runs, failures, p50/p95 duration, cost per success; gold.run_cost = cost per\n",
+          "job run; gold.query_fingerprint_stats = SQL statement shapes (fingerprint, executions, read bytes, pruning,\n",
+          "spill, cache hit rate); gold.cost_by_dimension = daily cost by product, SKU, workspace, cost centre, run_as.\n",
+          "Pipeline health (ops, one row per stage/source/rule per run_id): run_log, source_status, dq_report,\n",
+          "rule_status. For \"latest run\" filter run_id to the run with the newest run_ts in ops.run_log.\n",
+          "Join recommendations to job_scorecard with workload_key = concat('job:', job_id), and to\n",
+          "query_fingerprint_stats with workload_key = concat('query:', fingerprint).\n",
+          "DPO's own cost: gold.dpo_cost_summary (one row: dpo_monthly_cost, split jobs/sql/tagged, share_of_total_spend,\n",
+          "est_monthly_savings, savings_to_cost_ratio), gold.dpo_cost_daily (by day, component, item), gold.dpo_run_cost (per\n",
+          "DPO job run). Billing lags hours, so the latest run may show no cost yet.\n",
+          "Prefer aggregates; when listing people (run_as) only do so if the question asks for it."
+        ]
+      }
+    ],
+    "example_question_sqls": [
+      {
+        "id": "4526a35743a5f2cf3c277b298728dd26",
+        "question": [
+          "Which rules produced the most findings and what could they save?"
+        ],
+        "sql": [
+          "SELECT rule_id, count(*) AS findings, count_if(priority = 'P1') AS p1_findings,\n",
+          "       round(sum(coalesce(est_monthly_savings, 0)), 2) AS estimated_monthly_savings\n",
+          "FROM dpo_dev.gold.recommendations\n",
+          "GROUP BY rule_id\n",
+          "ORDER BY findings DESC, rule_id"
+        ]
+      },
+      {
+        "id": "56a5a6de5b1e04285de07fe6319a877b",
+        "question": [
+          "Which sources were not available in the latest run?"
+        ],
+        "sql": [
+          "SELECT source AS source_name, table_name, status, missing_columns, message\n",
+          "FROM dpo_dev.ops.source_status\n",
+          "WHERE run_id = (SELECT max_by(run_id, run_ts) FROM dpo_dev.ops.source_status) AND status <> 'available'"
+        ]
+      },
+      {
+        "id": "5dce420283582f13b1829a969cd7b6c8",
+        "question": [
+          "Which jobs have the highest cost per successful run?"
+        ],
+        "sql": [
+          "SELECT job_name, runs, succeeded, round(cost_per_success, 2) AS cost_per_success,\n",
+          "       round(monthly_cost, 2) AS monthly_cost, p95_duration_s\n",
+          "FROM dpo_dev.gold.job_scorecard\n",
+          "WHERE succeeded > 0\n",
+          "ORDER BY cost_per_success DESC\n",
+          "LIMIT 10"
+        ]
+      },
+      {
+        "id": "62bef55d95f3ac7ef29986aecc791967",
+        "question": [
+          "How is spend split by attribution type?"
+        ],
+        "sql": [
+          "SELECT attribution, round(sum(cost), 2) AS cost,\n",
+          "       round(sum(cost) / nullif(sum(sum(cost)) OVER (), 0) * 100, 1) AS share_pct\n",
+          "FROM dpo_dev.gold.workload_cost_daily\n",
+          "GROUP BY attribution\n",
+          "ORDER BY cost DESC"
+        ]
+      },
+      {
+        "id": "77fa49abc03370421805a8d3a6ec0a01",
+        "question": [
+          "What does DPO itself cost and does it pay for itself?"
+        ],
+        "sql": [
+          "SELECT dpo_monthly_cost, jobs_monthly, sql_monthly, tagged_monthly,\n",
+          "       round(share_of_total_spend * 100, 3) AS share_of_spend_pct,\n",
+          "       est_monthly_savings, savings_to_cost_ratio\n",
+          "FROM dpo_dev.gold.dpo_cost_summary"
+        ]
+      },
+      {
+        "id": "ac258f7f34e4aef3312e9312d61dbdaf",
+        "question": [
+          "Which query shapes read the most data per run without pruning?"
+        ],
+        "sql": [
+          "SELECT q.fingerprint, q.statement_shape, q.executions,\n",
+          "       round(q.avg_read_bytes / power(1024, 3), 2) AS avg_read_gb,\n",
+          "       round(q.avg_pruned_files / nullif(q.avg_read_files + q.avg_pruned_files, 0) * 100, 1) AS pruned_pct,\n",
+          "       round(q.monthly_cost, 2) AS monthly_cost\n",
+          "FROM dpo_dev.gold.query_fingerprint_stats q\n",
+          "ORDER BY q.avg_read_bytes DESC\n",
+          "LIMIT 10"
+        ]
+      },
+      {
+        "id": "c7c3d2466f710493da460dbfce5a9d54",
+        "question": [
+          "Did the latest DPO pipeline run succeed?"
+        ],
+        "sql": [
+          "SELECT stage, status, round(seconds, 1) AS seconds, rows_out, message, run_ts\n",
+          "FROM dpo_dev.ops.run_log\n",
+          "WHERE run_id = (SELECT max_by(run_id, run_ts) FROM dpo_dev.ops.run_log)\n",
+          "ORDER BY run_ts, stage"
+        ]
+      }
+    ],
+    "sql_snippets": {
+      "measures": [
+        {
+          "id": "5d6d299bdb771a068fd658cc9695ac7e",
+          "alias": "estimated_monthly_savings",
+          "display_name": "Estimated monthly savings",
+          "sql": [
+            "SUM(COALESCE(recommendations.est_monthly_savings, 0))"
+          ]
+        },
+        {
+          "id": "7284403d643a175a3ee9403e59f271e6",
+          "alias": "total_cost",
+          "display_name": "Total cost",
+          "sql": [
+            "SUM(cost_by_dimension.cost)"
+          ]
+        },
+        {
+          "id": "dd45c30ad5a53621ee3eb2343b0dfd7d",
+          "alias": "p1_findings",
+          "display_name": "P1 findings",
+          "sql": [
+            "COUNT_IF(recommendations.priority = 'P1')"
+          ]
+        },
+        {
+          "id": "f08c79ac407ebb899577152a8139ee64",
+          "alias": "job_failure_rate",
+          "display_name": "Job failure rate",
+          "sql": [
+            "SUM(job_scorecard.failed) / NULLIF(SUM(job_scorecard.runs), 0)"
+          ]
+        }
+      ]
+    }
+  },
+  "benchmarks": {
+    "questions": [
+      {
+        "id": "08213c65e51e8a786f7be21cb62624f3",
+        "question": [
+          "Which query shapes read the most data per run without pruning?"
+        ],
+        "answer": [
+          {
+            "format": "SQL",
+            "content": [
+              "SELECT q.fingerprint, q.statement_shape, q.executions,\n",
+              "       round(q.avg_read_bytes / power(1024, 3), 2) AS avg_read_gb,\n",
+              "       round(q.avg_pruned_files / nullif(q.avg_read_files + q.avg_pruned_files, 0) * 100, 1) AS pruned_pct,\n",
+              "       round(q.monthly_cost, 2) AS monthly_cost\n",
+              "FROM dpo_dev.gold.query_fingerprint_stats q\n",
+              "ORDER BY q.avg_read_bytes DESC\n",
+              "LIMIT 10"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "119182713610e7468a0a533d600ef291",
+        "question": [
+          "Did the latest DPO pipeline run succeed?"
+        ],
+        "answer": [
+          {
+            "format": "SQL",
+            "content": [
+              "SELECT stage, status, round(seconds, 1) AS seconds, rows_out, message, run_ts\n",
+              "FROM dpo_dev.ops.run_log\n",
+              "WHERE run_id = (SELECT max_by(run_id, run_ts) FROM dpo_dev.ops.run_log)\n",
+              "ORDER BY run_ts, stage"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "3861e14517f858147550c8e917ea0184",
+        "question": [
+          "Which sources were not available in the latest run?"
+        ],
+        "answer": [
+          {
+            "format": "SQL",
+            "content": [
+              "SELECT source AS source_name, table_name, status, missing_columns, message\n",
+              "FROM dpo_dev.ops.source_status\n",
+              "WHERE run_id = (SELECT max_by(run_id, run_ts) FROM dpo_dev.ops.source_status) AND status <> 'available'"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "4033955791359be0faa636a46d06cc6f",
+        "question": [
+          "What does DPO itself cost and does it pay for itself?"
+        ],
+        "answer": [
+          {
+            "format": "SQL",
+            "content": [
+              "SELECT dpo_monthly_cost, jobs_monthly, sql_monthly, tagged_monthly,\n",
+              "       round(share_of_total_spend * 100, 3) AS share_of_spend_pct,\n",
+              "       est_monthly_savings, savings_to_cost_ratio\n",
+              "FROM dpo_dev.gold.dpo_cost_summary"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "623b8a19d68bd89424240ae155855fb4",
+        "question": [
+          "Which rules produced the most findings and what could they save?"
+        ],
+        "answer": [
+          {
+            "format": "SQL",
+            "content": [
+              "SELECT rule_id, count(*) AS findings, count_if(priority = 'P1') AS p1_findings,\n",
+              "       round(sum(coalesce(est_monthly_savings, 0)), 2) AS estimated_monthly_savings\n",
+              "FROM dpo_dev.gold.recommendations\n",
+              "GROUP BY rule_id\n",
+              "ORDER BY findings DESC, rule_id"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "80cb69e3c9f75688b1e36e0096ceb87e",
+        "question": [
+          "How is spend split by attribution type?"
+        ],
+        "answer": [
+          {
+            "format": "SQL",
+            "content": [
+              "SELECT attribution, round(sum(cost), 2) AS cost,\n",
+              "       round(sum(cost) / nullif(sum(sum(cost)) OVER (), 0) * 100, 1) AS share_pct\n",
+              "FROM dpo_dev.gold.workload_cost_daily\n",
+              "GROUP BY attribution\n",
+              "ORDER BY cost DESC"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "d3533caf7cd516f2d95b2094bf34a3a5",
+        "question": [
+          "Which jobs have the highest cost per successful run?"
+        ],
+        "answer": [
+          {
+            "format": "SQL",
+            "content": [
+              "SELECT job_name, runs, succeeded, round(cost_per_success, 2) AS cost_per_success,\n",
+              "       round(monthly_cost, 2) AS monthly_cost, p95_duration_s\n",
+              "FROM dpo_dev.gold.job_scorecard\n",
+              "WHERE succeeded > 0\n",
+              "ORDER BY cost_per_success DESC\n",
+              "LIMIT 10"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,62 @@
+# Jobs present in every target. Serverless compute (no cluster spec).
+# dpo_pipeline keeps the v1 job key, so `bundle deploy` updates the existing job in place.
+resources:
+  jobs:
+    dpo_pipeline:
+      name: dpo-pipeline-${var.profile}
+      description: Databricks Processing Optimization - ingest, attribute cost, diagnose, score, narrate, forecast
+      max_concurrent_runs: 1
+      schedule:
+        quartz_cron_expression: "0 30 6 * * ?"     # 06:30 IST daily
+        timezone_id: Asia/Kolkata
+        pause_status: PAUSED          # enterprise_prod overrides to UNPAUSED
+      parameters:
+        - {name: profile, default: "${var.profile}"}
+        - {name: catalog, default: "${var.catalog}"}
+        - {name: warehouse_id, default: "${var.warehouse_id}"}   # ai_forecast runs on this SQL warehouse
+      tasks:
+        - task_key: generate_synthetic              # exits immediately on system-table profiles
+          notebook_task: {notebook_path: ../notebooks/01_generate_synthetic_data.py}
+        - task_key: run_pipeline
+          depends_on: [{task_key: generate_synthetic}]
+          notebook_task: {notebook_path: ../notebooks/02_run_pipeline.py}
+      # email_notifications: {on_failure: ["dpo-admins@corp.com"]}   # set before go-live
+      tags: {app: dpo-accelerator, dpo_profile: "${var.profile}", cost_center: platform-finops}
+
+    # One-time (and safe to re-run) installer: access gate -> setup -> first pipeline run -> views -> verify.
+    # Jobs, dashboards and Genie spaces are left to the bundle (schedule=none, dashboards=no, genie=no).
+    dpo_install:
+      name: dpo-install-${var.profile}
+      max_concurrent_runs: 1
+      parameters:
+        - {name: profile, default: "${var.profile}"}
+        - {name: catalog, default: "${var.catalog}"}
+      tasks:
+        - task_key: install
+          notebook_task:
+            notebook_path: ../notebooks/00_install.py
+            base_parameters:
+              schedule: none
+              dashboards: "no"                      # the bundle deploys the dashboards
+              genie: "no"                           # ... and the Genie spaces
+              include_lab: "yes"
+              pipeline_run_as: ${var.service_principal}
+              governance_run_as: ${var.admin_service_principal}
+      tags: {app: dpo-accelerator, dpo_profile: "${var.profile}"}
+
+# Classic-compute fallback (only if serverless jobs are disabled in a client workspace). Add under
+# that target in databricks.yml:
+#   resources:
+#     jobs:
+#       dpo_pipeline:
+#         job_clusters:
+#           - job_cluster_key: dpo
+#             new_cluster:
+#               spark_version: 15.4.x-scala2.12
+#               node_type_id: Standard_D4ds_v5
+#               num_workers: 2
+#               data_security_mode: SINGLE_USER
+#               custom_tags: {cost_center: platform-finops}
+#         tasks:
+#           - {task_key: generate_synthetic, job_cluster_key: dpo}
+#           - {task_key: run_pipeline, job_cluster_key: dpo}

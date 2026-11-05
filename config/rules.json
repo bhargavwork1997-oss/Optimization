@@ -1,0 +1,287 @@
+{
+ "version": "1.1.0",
+ "notes": "confidence (C), feasibility (F), reversibility (R) are 0-100 inputs to S = 0.35V + 0.25C + 0.20F + 0.20R. Tune thresholds per client; keep the file under version control.",
+ "rules": [
+  {
+   "rule_id": "R01_COMPUTE_IDLE",
+   "title": "All-purpose cluster mostly idle",
+   "category": "COMPUTE",
+   "severity": "high",
+   "confidence": 85,
+   "feasibility": 90,
+   "reversibility": 95,
+   "enabled": true,
+   "thresholds": {
+    "max_avg_cpu_pct": 10,
+    "min_daily_uptime_h": 4,
+    "target_cpu_pct": 40
+   },
+   "action": "Lower auto-termination, enable autoscaling with a small minimum, or move the workload to serverless."
+  },
+  {
+   "rule_id": "R02_COMPUTE_OVERSIZED",
+   "title": "Job cluster over-provisioned",
+   "category": "COMPUTE",
+   "severity": "high",
+   "confidence": 75,
+   "feasibility": 85,
+   "reversibility": 95,
+   "enabled": true,
+   "thresholds": {
+    "min_workers": 8,
+    "max_avg_cpu_pct": 25,
+    "max_avg_mem_pct": 40,
+    "target_util_pct": 60
+   },
+   "action": "Benchmark with half the workers or autoscaling; keep the change if runtime stays inside the SLA."
+  },
+  {
+   "rule_id": "R03_COMPUTE_AUTOTERMINATION",
+   "title": "Auto-termination disabled or too long",
+   "category": "COMPUTE",
+   "severity": "medium",
+   "confidence": 90,
+   "feasibility": 95,
+   "reversibility": 100,
+   "enabled": true,
+   "thresholds": {
+    "max_minutes": 120,
+    "savings_fraction": 0.3
+   },
+   "action": "Set auto-termination to 30-60 minutes through a cluster policy."
+  },
+  {
+   "rule_id": "R04_COMPUTE_OLD_RUNTIME",
+   "title": "Unsupported or old Databricks Runtime",
+   "category": "COMPUTE",
+   "severity": "medium",
+   "confidence": 55,
+   "feasibility": 60,
+   "reversibility": 70,
+   "enabled": true,
+   "thresholds": {
+    "min_dbr_major": 13,
+    "savings_fraction": 0.15
+   },
+   "action": "Upgrade to a current LTS runtime (Photon where available) after a regression run on a copy of the job."
+  },
+  {
+   "rule_id": "R05_JOB_ON_ALL_PURPOSE",
+   "title": "Scheduled job runs on all-purpose compute",
+   "category": "COMPUTE",
+   "severity": "high",
+   "confidence": 90,
+   "feasibility": 85,
+   "reversibility": 95,
+   "enabled": true,
+   "thresholds": {
+    "min_share_of_runs": 0.5,
+    "savings_fraction": 0.6
+   },
+   "action": "Move the job to job compute or serverless jobs; all-purpose DBUs are priced several times higher."
+  },
+  {
+   "rule_id": "R06_JOB_FAILURE_RATE",
+   "title": "High job failure rate",
+   "category": "RELIABILITY",
+   "severity": "high",
+   "confidence": 90,
+   "feasibility": 60,
+   "reversibility": 80,
+   "enabled": true,
+   "thresholds": {
+    "min_runs": 10,
+    "max_failure_rate": 0.15
+   },
+   "action": "Triage the top termination codes; add retries with back-off only after fixing the root cause."
+  },
+  {
+   "rule_id": "R07_TASK_SKEW",
+   "title": "One task dominates job runtime",
+   "category": "PIPELINE",
+   "severity": "medium",
+   "confidence": 65,
+   "feasibility": 55,
+   "reversibility": 80,
+   "enabled": true,
+   "thresholds": {
+    "min_tasks": 3,
+    "min_max_to_median": 4.0,
+    "min_share_of_runs": 0.5,
+    "savings_fraction": 0.25
+   },
+   "action": "Profile the slow task (Spark UI: skewed partitions, shuffle, UDFs); consider splitting or salting the key."
+  },
+  {
+   "rule_id": "R08_RUNTIME_REGRESSION",
+   "title": "Job runtime regressed",
+   "category": "PERFORMANCE",
+   "severity": "high",
+   "confidence": 70,
+   "feasibility": 60,
+   "reversibility": 75,
+   "enabled": true,
+   "thresholds": {
+    "recent_days": 7,
+    "min_runs_each": 3,
+    "min_ratio": 1.4
+   },
+   "action": "Diff code, input volume and table layout between the two periods; check for data growth or a lost filter."
+  },
+  {
+   "rule_id": "R09_COST_SPIKE",
+   "title": "Daily cost spike",
+   "category": "COST",
+   "severity": "high",
+   "confidence": 70,
+   "feasibility": 70,
+   "reversibility": 80,
+   "enabled": true,
+   "thresholds": {
+    "recent_days": 3,
+    "min_ratio": 2.0,
+    "min_daily_cost": 1.0,
+    "min_baseline_days": 7
+   },
+   "action": "Confirm with the owner whether the increase is expected (backfill, new data); otherwise roll back the change."
+  },
+  {
+   "rule_id": "R10_UNTAGGED_SPEND",
+   "title": "Spend without cost-center tag",
+   "category": "GOVERNANCE",
+   "severity": "low",
+   "confidence": 95,
+   "feasibility": 95,
+   "reversibility": 100,
+   "enabled": true,
+   "thresholds": {
+    "min_untagged_share": 0.5,
+    "min_monthly_cost": 5.0
+   },
+   "action": "Add the cost_center tag (job, cluster or warehouse) and enforce it with a compute policy."
+  },
+  {
+   "rule_id": "R11_SQL_NO_PRUNING",
+   "title": "Query scans whole table (no file pruning)",
+   "category": "SQL",
+   "severity": "high",
+   "confidence": 75,
+   "feasibility": 65,
+   "reversibility": 85,
+   "enabled": true,
+   "thresholds": {
+    "min_executions": 5,
+    "min_read_files": 100,
+    "min_read_gb": 10,
+    "max_prune_ratio": 0.05,
+    "savings_fraction": 0.5
+   },
+   "action": "Filter on clustered/partition columns, or add liquid clustering on the filter column; verify with EXPLAIN and the query profile."
+  },
+  {
+   "rule_id": "R12_SQL_SPILL",
+   "title": "Query spills to disk",
+   "category": "SQL",
+   "severity": "medium",
+   "confidence": 70,
+   "feasibility": 60,
+   "reversibility": 85,
+   "enabled": true,
+   "thresholds": {
+    "min_executions": 5,
+    "min_spill_share": 0.2,
+    "savings_fraction": 0.3
+   },
+   "action": "Reduce shuffle width (pre-aggregate, prune columns), check join strategy, or use a larger warehouse size only for this query."
+  },
+  {
+   "rule_id": "R13_SQL_REPEATED_NO_CACHE",
+   "title": "Identical query re-executed without cache hits",
+   "category": "SQL",
+   "severity": "medium",
+   "confidence": 70,
+   "feasibility": 80,
+   "reversibility": 95,
+   "enabled": true,
+   "thresholds": {
+    "min_executions_per_day": 50,
+    "max_cache_hit_rate": 0.1,
+    "savings_fraction": 0.7
+   },
+   "action": "Materialise the result (materialized view or scheduled table) or fix the dashboard refresh interval."
+  },
+  {
+   "rule_id": "R14_WAREHOUSE_QUEUING",
+   "title": "SQL warehouse queuing at capacity",
+   "category": "SQL",
+   "severity": "medium",
+   "confidence": 80,
+   "feasibility": 85,
+   "reversibility": 95,
+   "enabled": true,
+   "thresholds": {
+    "queue_ms": 10000,
+    "min_queries": 50,
+    "min_queued_share": 0.1
+   },
+   "action": "Raise max clusters (scaling) rather than size; separate ETL and BI traffic onto different warehouses."
+  },
+  {
+   "rule_id": "R15_TABLE_SMALL_FILES",
+   "title": "Delta table has many small files",
+   "category": "STORAGE",
+   "severity": "medium",
+   "confidence": 80,
+   "feasibility": 90,
+   "reversibility": 90,
+   "enabled": true,
+   "thresholds": {
+    "min_files": 1000,
+    "max_avg_file_mb": 32
+   },
+   "action": "Run OPTIMIZE, enable predictive optimization or auto-compaction, and fix the writer that produces tiny files."
+  },
+  {
+   "rule_id": "R16_SQL_ANTI_PATTERN",
+   "title": "SQL anti-pattern in a recurring query",
+   "category": "SQL",
+   "severity": "medium",
+   "confidence": 60,
+   "feasibility": 70,
+   "reversibility": 85,
+   "enabled": true,
+   "thresholds": {
+    "min_executions": 5,
+    "min_active_days": 3,
+    "savings_fraction": 0.25,
+    "patterns": {
+     "cross_join": "\\bcross join\\b",
+     "function_on_filter_column": "\\bwhere\\b.*\\b(year|month|day|to_date|date_format|date_trunc|cast|upper|lower|trim)\\s*\\(",
+     "select_distinct_star": "\\bselect distinct \\*",
+     "not_in_subquery": "\\bnot in\\s*\\(\\s*select\\b"
+    }
+   },
+   "action": "Rewrite: replace CROSS JOIN with an equi-join, turn year(col)=X into a range filter, project only needed columns, replace NOT IN (subquery) with NOT EXISTS; confirm with the query profile."
+  },
+  {
+   "rule_id": "R17_REPLATFORM_CANDIDATE",
+   "title": "Plain file copy running on Databricks",
+   "category": "REPLATFORM",
+   "severity": "medium",
+   "confidence": 50,
+   "feasibility": 50,
+   "reversibility": 60,
+   "enabled": true,
+   "thresholds": {
+    "min_executions": 5,
+    "min_active_days": 3,
+    "savings_fraction": 0.5,
+    "patterns": {
+     "insert_select_star_from_files": "^insert (into|overwrite)( table)? \\S+ select \\* from (csv|json|parquet|avro|text|orc)\\.`",
+     "copy_into": "^copy into\\b"
+    }
+   },
+   "action": "Benchmark an ADF Copy activity or Azure Function landing files to ADLS against the current DBU cost; keep transformations on Databricks. Move only if total cost of ownership is lower."
+  }
+ ]
+}

@@ -1,0 +1,25 @@
+{
+  "description": "Databricks Free Edition / personal sandbox. Synthetic data only (Free Edition is non-commercial: never load client telemetry here). Governance not enforced (no account groups).",
+  "catalog": "workspace",
+  "schema_prefix": "dpo_",
+  "source_mode": "synthetic",
+  "lookback_days": 30,
+  "inventory_catalogs": [
+    "workspace"
+  ],
+  "governance": {
+    "enforce": false,
+    "apply_grants": false
+  },
+  "ai_enabled": true,
+  "workspace_hosts": [
+    "dbc-858dc22a-1203.cloud.databricks.com"
+  ],
+  "budgets": {
+    "cc-finance": 4300,
+    "cc-sales": 8000,
+    "cc-hr": 440,
+    "cc-marketing": 20
+  },
+  "forecast_method": "ai_forecast"
+}

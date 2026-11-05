@@ -1,0 +1,38 @@
+# Deploy with Databricks Asset Bundles. Manual, per environment, with GitHub environment approvals.
+# Each GitHub environment (enterprise_dev, enterprise_prod) holds its own secrets for a deploy
+# service principal (OAuth M2M): DATABRICKS_HOST, DATABRICKS_CLIENT_ID, DATABRICKS_CLIENT_SECRET.
+# For enterprise_prod the deploy SP needs the "Service principal: User" role on sp-dpo and sp-dpo-admin.
+name: dpo-deploy
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Bundle target
+        type: choice
+        options: [enterprise_dev, enterprise_prod]
+      run_install:
+        description: Run dpo_install after deploy (first deployment, or after governance/profile changes)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency: dpo-deploy-${{ inputs.target }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target }}
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+      DATABRICKS_BUNDLE_ENV: ${{ inputs.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main           # pin to a release tag or commit SHA
+      - run: databricks bundle validate -t "${{ inputs.target }}"
+      - run: databricks bundle deploy -t "${{ inputs.target }}"
+      - if: ${{ inputs.run_install }}
+        run: databricks bundle run dpo_install -t "${{ inputs.target }}"
