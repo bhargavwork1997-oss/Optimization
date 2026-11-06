@@ -69,7 +69,10 @@ def baseline(ctx, daily, horizon: dt.date):
         F.col("mean_7d") / F.when(F.col("mean_all") > 0, F.col("mean_all")), F.lit(1.0))))
     future = ctx.spark.sql(f"SELECT explode(sequence(DATE'{last + dt.timedelta(days=1)}', "
                            f"DATE'{horizon - dt.timedelta(days=1)}')) AS forecast_date")
-    fc = (future.crossJoin(lvl).join(resid, "cost_center")
+    # per-cost-centre stats joined first (tiny equi join), so the cross join builds the
+    # date x cost-centre grid against one consolidated stats table
+    cc_stats = lvl.join(resid, "cost_center")
+    fc = (future.crossJoin(cc_stats)
           .withColumn("dow", F.dayofweek("forecast_date")).join(by_dow, ["cost_center", "dow"], "left")
           .withColumn("cost_forecast", F.coalesce("dow_mean", "mean_all") * trend))
     return fc.select("forecast_date", "cost_center", "cost_forecast",
