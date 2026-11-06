@@ -38,7 +38,9 @@
 dbutils.widgets.dropdown("apply_governance", "plan_only", ["plan_only", "apply"], "Governance")
 from dpo import governance
 
-display(spark.createDataFrame(governance.preflight(spark, cfg), "check string, status string, detail string, fix string"))
+display(
+    spark.createDataFrame(governance.preflight(spark, cfg), "check string, status string, detail string, fix string")
+)
 
 # COMMAND ----------
 
@@ -52,10 +54,19 @@ display(spark.createDataFrame(governance.preflight(spark, cfg), "check string, s
 
 mode = dbutils.widgets.get("apply_governance")
 result = governance.admin_apply(spark, cfg, run_id="setup", dry_run=(mode != "apply"))
-display(spark.createDataFrame(result["rows"], "section string, purpose string, statement string, status string, error string"))
+display(
+    spark.createDataFrame(
+        result["rows"], "section string, purpose string, statement string, status string, error string"
+    )
+)
 if result["drift"]:
-    display(spark.createDataFrame(result["drift"],
-                                  "schema_name string, principal string, privilege string, status string, error string"))
+    display(
+        spark.createDataFrame(
+            result["drift"], "schema_name string, principal string, privilege string, status string, error string"
+        )
+    )
 errors = [r for r in result["rows"] if r[3] == "ERROR"]
-print(f"{mode}: {len(result['rows'])} statements, {len(errors)} errors, "
-      f"{sum(r[3] == 'SKIPPED' for r in result['rows'])} skipped (objects not created yet)")
+print(
+    f"{mode}: {len(result['rows'])} statements, {len(errors)} errors, "
+    f"{sum(r[3] == 'SKIPPED' for r in result['rows'])} skipped (objects not created yet)"
+)

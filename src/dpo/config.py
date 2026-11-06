@@ -9,6 +9,7 @@ enterprise account is a profile switch, not a code change:
   enterprise_prod  catalog=dpo,       system tables, governance enforced + drift revoke
   local (tests)    catalog=None, parquet tables
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -16,7 +17,6 @@ import json
 import os
 import re
 from dataclasses import dataclass, field, fields
-from typing import Optional
 
 # Logical source name -> Databricks system table.  table_inventory has no single
 # system table; it is collected from information_schema + DESCRIBE DETAIL.
@@ -45,10 +45,10 @@ _SKU_LIKE = re.compile(r"^[A-Za-z0-9_%]+$")
 _LOCATION = re.compile(r"^(abfss|s3|gs|r2)://[A-Za-z0-9@._/:-]+$")
 _HOST = re.compile(r"^[a-z0-9.-]+$")
 _PROFILE = re.compile(r"^[a-z0-9_]{1,64}$")
-HOSTED_PREFIXES = ("databricks-", "system.ai.")   # Databricks-hosted foundation models
+HOSTED_PREFIXES = ("databricks-", "system.ai.")  # Databricks-hosted foundation models
 
 
-def normalize_host(host: Optional[str]) -> Optional[str]:
+def normalize_host(host: str | None) -> str | None:
     """'https://adb-1.2.azuredatabricks.net/?o=1' -> 'adb-1.2.azuredatabricks.net'"""
     if not host:
         return None
@@ -57,8 +57,7 @@ def normalize_host(host: Optional[str]) -> Optional[str]:
     return h.split("/")[0].split("?")[0] or None
 
 
-def detect_profile(host: Optional[str], profile_dir: Optional[str] = None,
-                   default: str = "free_edition") -> tuple[str, str]:
+def detect_profile(host: str | None, profile_dir: str | None = None, default: str = "free_edition") -> tuple[str, str]:
     """Pick the profile whose `workspace_hosts` contains this workspace. Returns (profile, reason)."""
     profile_dir = profile_dir or PROFILE_DIR
     env = os.environ.get("DPO_PROFILE")
@@ -74,6 +73,7 @@ def detect_profile(host: Optional[str], profile_dir: Optional[str] = None,
                     return f[:-5], f"workspace {h} is listed in {f}"
     return default, f"no profile lists workspace {h or '(unknown)'}; defaulting to {default}"
 
+
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _DEFAULT_RULES = os.path.join(_ROOT, "config", "rules.json")
 PROFILE_DIR = os.path.join(_ROOT, "config", "environments")
@@ -82,72 +82,77 @@ PROFILE_DIR = os.path.join(_ROOT, "config", "environments")
 def default_governance() -> dict:
     """Governance defaults: everything off (Free Edition). Enterprise profiles switch it on."""
     return {
-        "enforce": False,              # authorization check + row/identity filtering in reporting views
-        "apply_grants": False,         # run GRANT / OWNER / TAG statements each run
-        "manage_ownership": False,     # ALTER ... OWNER TO admins
+        "enforce": False,  # authorization check + row/identity filtering in reporting views
+        "apply_grants": False,  # run GRANT / OWNER / TAG statements each run
+        "manage_ownership": False,  # ALTER ... OWNER TO admins
         "grant_system_access": False,  # GRANT on system.* (needs metastore admin)
-        "revoke_drift": False,         # REVOKE privileges from principals outside the role model
-        "fail_on_error": False,        # a failed governance statement fails the run
+        "revoke_drift": False,  # REVOKE privileges from principals outside the role model
+        "fail_on_error": False,  # a failed governance statement fails the run
         "groups": {
-            "admins": "dpo-admins",        # own the catalog, read everything, manage grants
+            "admins": "dpo-admins",  # own the catalog, read everything, manage grants
             "operators": "dpo-operators",  # run the pipeline (job service principal belongs here)
-            "analysts": "dpo-analysts",    # read silver, gold, ops health; see identities
-            "viewers": "dpo-viewers",      # read reporting views only; filtered by cost centre
+            "analysts": "dpo-analysts",  # read silver, gold, ops health; see identities
+            "viewers": "dpo-viewers",  # read reporting views only; filtered by cost centre
         },
-        "authorized_principals": [],       # extra users/SPs allowed to run (prefer groups)
-        "cost_center_groups": {},          # {"finance-leads": ["cc-finance"]} -> row visibility
+        "authorized_principals": [],  # extra users/SPs allowed to run (prefer groups)
+        "cost_center_groups": {},  # {"finance-leads": ["cc-finance"]} -> row visibility
         "mask_identities_for_viewers": True,
         "classification": "confidential",
         "membership_function": "is_account_group_member",
         "operators_can_create_schemas": False,  # dev only: lets test suites create dpo_test_* schemas
-        "retain_raw_sql": False,           # False: bronze keeps literal- and comment-stripped SQL only
-        "ai_allow_external": False,        # False: ai_query only to Databricks-hosted endpoints
-        "allowed_catalogs": [],            # extra catalogs a run may be redirected to (catalog override)
-        "simulate_membership": None,       # local tests only (refused when a catalog is set)
-        "simulate_user": None,             # local tests only (refused when a catalog is set)
+        "retain_raw_sql": False,  # False: bronze keeps literal- and comment-stripped SQL only
+        "ai_allow_external": False,  # False: ai_query only to Databricks-hosted endpoints
+        "allowed_catalogs": [],  # extra catalogs a run may be redirected to (catalog override)
+        "simulate_membership": None,  # local tests only (refused when a catalog is set)
+        "simulate_user": None,  # local tests only (refused when a catalog is set)
     }
 
 
 @dataclass
 class DPOConfig:
+    """Everything that differs between environments: catalog, sources, governance, AI, budgets.
+
+    Built from a profile in config/environments/ (`from_profile`), optionally overridden by widgets or job
+    parameters, and checked by `validate` before any SQL is built from it.
+    """
+
     profile: str = "custom"
-    catalog: Optional[str] = "workspace"      # None = local Spark (no Unity Catalog)
-    schema_prefix: str = "dpo_"               # workspace.dpo_bronze, workspace.dpo_silver ...
-    managed_location: Optional[str] = None    # enterprise: abfss://... for CREATE CATALOG
-    source_mode: str = "synthetic"            # "synthetic" | "system"
+    catalog: str | None = "workspace"  # None = local Spark (no Unity Catalog)
+    schema_prefix: str = "dpo_"  # workspace.dpo_bronze, workspace.dpo_silver ...
+    managed_location: str | None = None  # enterprise: abfss://... for CREATE CATALOG
+    source_mode: str = "synthetic"  # "synthetic" | "system"
     lookback_days: int = 30
-    end_date: Optional[str] = None            # "YYYY-MM-DD"; None = today (UTC)
-    table_format: str = "delta"               # "parquet" for local tests
+    end_date: str | None = None  # "YYYY-MM-DD"; None = today (UTC)
+    table_format: str = "delta"  # "parquet" for local tests
     rules_path: str = _DEFAULT_RULES
     weights: dict = field(default_factory=lambda: {"V": 0.35, "C": 0.25, "F": 0.20, "R": 0.20})
     cost_center_tag: str = "cost_center"
     currency: str = "USD"
-    price_multiplier: float = 1.0             # contract discount: 0.8 = 20% off list
+    price_multiplier: float = 1.0  # contract discount: 0.8 = 20% off list
     contract_prices: dict = field(default_factory=dict)  # {"%ALL_PURPOSE%": 0.40} USD/DBU, SKU LIKE pattern
     workspace_ids: list = field(default_factory=list)  # scope account-wide system tables; [] = all
     workspace_hosts: list = field(default_factory=list)  # workspaces this profile may run in (auto-detect + guard)
     ai_enabled: bool = False
     ai_endpoint: str = "databricks-meta-llama-3-3-70b-instruct"
-    ai_max_rows: int = 25                     # findings narrated per run (top by rank); cached by input
+    ai_max_rows: int = 25  # findings narrated per run (top by rank); cached by input
     # spend forecast + budget outlook (gold.cost_forecast, gold.budget_outlook)
     forecast_enabled: bool = True
-    forecast_method: str = "ai_forecast"      # "ai_forecast" (SQL warehouse) | "baseline" (weekday average)
-    forecast_interval: float = 0.8            # prediction interval width (0.5-0.99)
-    forecast_version: str = ""                # "" = Databricks default, "1" or "2" (2 needs preview enrolment)
-    forecast_warehouse_id: str = ""           # set at run time by the job (bundle var.warehouse_id)
+    forecast_method: str = "ai_forecast"  # "ai_forecast" (SQL warehouse) | "baseline" (weekday average)
+    forecast_interval: float = 0.8  # prediction interval width (0.5-0.99)
+    forecast_version: str = ""  # "" = Databricks default, "1" or "2" (2 needs preview enrolment)
+    forecast_warehouse_id: str = ""  # set at run time by the job (bundle var.warehouse_id)
     budgets: dict = field(default_factory=dict)  # {"cc-finance": 6000} monthly budget per cost centre
     inventory_catalogs: list = field(default_factory=list)  # system mode: catalogs to scan for table layout
     inventory_max_tables: int = 500
     log_retention_days: int = 365
     governance: dict = field(default_factory=default_governance)
-    profile_catalog: Optional[str] = None     # catalog as written in the profile (set by from_profile)
+    profile_catalog: str | None = None  # catalog as written in the profile (set by from_profile)
 
     # ---- profiles -------------------------------------------------------------
     @classmethod
-    def from_profile(cls, name: str, overrides: Optional[dict] = None,
-                     profile_dir: str = PROFILE_DIR) -> "DPOConfig":
+    def from_profile(cls, name: str, overrides: dict | None = None, profile_dir: str = PROFILE_DIR) -> DPOConfig:
         """Load config/environments/<name>.json, then apply non-empty overrides."""
-        if not _PROFILE.match(name or ""):   # the name comes from widgets/job parameters: no paths
+        if not _PROFILE.match(name or ""):  # the name comes from widgets/job parameters: no paths
             raise ValueError(f"illegal profile name: {name!r}")
         path = os.path.join(profile_dir, f"{name}.json")
         if not os.path.exists(path):
@@ -156,14 +161,14 @@ class DPOConfig:
         with open(path) as fh:
             data = json.load(fh)
         data["profile"] = name
-        data["profile_catalog"] = data.get("catalog")      # remembered: the runtime guard refuses redirects
+        data["profile_catalog"] = data.get("catalog")  # remembered: the runtime guard refuses redirects
         for k, v in (overrides or {}).items():
             if v not in (None, "", []):
                 data[k] = v
         return cls.from_dict(data)
 
     @classmethod
-    def from_dict(cls, data: dict) -> "DPOConfig":
+    def from_dict(cls, data: dict) -> DPOConfig:
         """Build a config from a plain dict; unknown keys are refused (typos must not be silently ignored)."""
         known = {f.name for f in fields(cls)}
         unknown = set(data) - known - {"description"}
@@ -188,7 +193,7 @@ class DPOConfig:
         """Fully qualified table name: <catalog>.<prefix><layer>.<name>."""
         return f"{self.schema(layer)}.{name}"
 
-    def source(self, name: str) -> Optional[str]:
+    def source(self, name: str) -> str | None:
         """System table to read for a source, or its synthetic twin in synthetic mode."""
         if self.source_mode == "system":
             return SYSTEM_SOURCES[name]
@@ -209,6 +214,13 @@ class DPOConfig:
         """Reject unsafe or inconsistent settings before any SQL is built. Everything interpolated into SQL is
         allow-listed here (identifiers, groups, cost centres, SKU patterns, hosts, endpoints, dates, ranges).
         """
+        self._validate_run_settings()
+        self._validate_governance()
+        self._validate_sql_values()
+        self._validate_ai_and_forecast()
+
+    def _validate_run_settings(self) -> None:
+        """Source mode, score weights, window, end date and price multiplier."""
         if self.source_mode not in ("synthetic", "system"):
             raise ValueError(f"source_mode must be synthetic|system, got {self.source_mode}")
         total = round(sum(self.weights.values()), 6)
@@ -223,6 +235,9 @@ class DPOConfig:
                 raise ValueError(f"end_date must be YYYY-MM-DD: {self.end_date!r}") from None
         if not 0 < float(self.price_multiplier) <= 1.5:
             raise ValueError("price_multiplier must be in (0, 1.5]")
+
+    def _validate_governance(self) -> None:
+        """Role groups, enforcement prerequisites, and test hooks never against a real metastore."""
         g = self.governance
         missing = {"admins", "operators", "analysts", "viewers"} - set(g["groups"])
         if missing:
@@ -234,34 +249,62 @@ class DPOConfig:
         # test hooks must never bypass authorization against a real metastore
         if self.catalog and (g.get("simulate_membership") is not None or g.get("simulate_user")):
             raise ValueError("simulate_membership / simulate_user are test-only and refused when catalog is set")
-        # everything below is interpolated into SQL: allow-list the characters
-        for label, val in (("catalog", self.catalog), ("schema_prefix", self.schema_prefix or "x"),
-                           ("cost_center_tag", self.cost_center_tag)):
+        if g["membership_function"] not in ("is_account_group_member", "is_member"):
+            raise ValueError("membership_function must be is_account_group_member or is_member")
+
+    def _validate_sql_values(self) -> None:
+        """Everything here is interpolated into SQL: allow-list the characters."""
+        g = self.governance
+        for label, val in (
+            ("catalog", self.catalog),
+            ("schema_prefix", self.schema_prefix or "x"),
+            ("cost_center_tag", self.cost_center_tag),
+        ):
             if val is not None and not _IDENT.match(val):
                 raise ValueError(f"illegal characters in {label}: {val!r}")
         for c in list(self.inventory_catalogs) + list(g.get("allowed_catalogs", [])):
             if not _IDENT.match(c):
                 raise ValueError(f"illegal characters in inventory catalog: {c!r}")
         for h in self.workspace_hosts:
-            if not normalize_host(h) or not _HOST.match(normalize_host(h)):
+            host = normalize_host(h)
+            if not host or not _HOST.match(host):
                 raise ValueError(f"bad workspace host: {h!r}")
         if self.managed_location and not _LOCATION.match(self.managed_location):
             raise ValueError(f"managed_location must be a cloud URI without quotes: {self.managed_location!r}")
+        self._validate_sql_names()
+        self._validate_sql_amounts()
+
+    def _validate_sql_names(self) -> None:
+        """Group names and cost-centre values used in GRANTs and row filters."""
+        g = self.governance
         for name in list(g["groups"].values()) + list(g["cost_center_groups"]) + list(g["authorized_principals"]):
             if not _GROUP.match(name):
                 raise ValueError(f"illegal character in group name: {name}")
-        for centres in g["cost_center_groups"].values():
-            for c in centres:
-                if not _CC_VALUE.match(c):
-                    raise ValueError(f"illegal character in cost centre: {c!r}")
+        for centre in (c for centres in g["cost_center_groups"].values() for c in centres):
+            if not _CC_VALUE.match(centre):
+                raise ValueError(f"illegal character in cost centre: {centre!r}")
+
+    def _validate_sql_amounts(self) -> None:
+        """Contract prices, warehouse id and budgets (interpolated as numbers and patterns)."""
         for pat, price in self.contract_prices.items():
             if not _SKU_LIKE.match(pat) or not 0 < float(price) < 100:
                 raise ValueError(f"bad contract price {pat!r}: {price!r}")
+        if self.forecast_warehouse_id and not _IDENT.match(self.forecast_warehouse_id):
+            raise ValueError(f"illegal forecast_warehouse_id: {self.forecast_warehouse_id!r}")
+        for cc, amount in self.budgets.items():
+            if not _CC_VALUE.match(cc) or not 0 < float(amount) < 1e12:
+                raise ValueError(f"bad budget {cc!r}: {amount!r}")
+
+    def _validate_ai_and_forecast(self) -> None:
+        """Model endpoint (Databricks-hosted unless approved), AI row limit and forecast settings."""
         if not _ENDPOINT.match(self.ai_endpoint):
             raise ValueError(f"illegal ai_endpoint: {self.ai_endpoint!r}")
-        if self.ai_enabled and not g["ai_allow_external"] and not self.ai_endpoint.startswith(HOSTED_PREFIXES):
-            raise ValueError("ai_endpoint must be a Databricks-hosted model (databricks-* or system.ai.*) unless "
-                             "governance.ai_allow_external is approved")
+        external = not self.ai_endpoint.startswith(HOSTED_PREFIXES)
+        if self.ai_enabled and external and not self.governance["ai_allow_external"]:
+            raise ValueError(
+                "ai_endpoint must be a Databricks-hosted model (databricks-* or system.ai.*) unless "
+                "governance.ai_allow_external is approved"
+            )
         if not 1 <= int(self.ai_max_rows) <= 200:
             raise ValueError("ai_max_rows must be between 1 and 200")
         if self.forecast_method not in ("ai_forecast", "baseline"):
@@ -270,10 +313,3 @@ class DPOConfig:
             raise ValueError("forecast_interval must be between 0.5 and 0.99")
         if self.forecast_version not in ("", "1", "2"):
             raise ValueError("forecast_version must be '', '1' or '2'")
-        if self.forecast_warehouse_id and not _IDENT.match(self.forecast_warehouse_id):
-            raise ValueError(f"illegal forecast_warehouse_id: {self.forecast_warehouse_id!r}")
-        for cc, amount in self.budgets.items():
-            if not _CC_VALUE.match(cc) or not 0 < float(amount) < 1e12:
-                raise ValueError(f"bad budget {cc!r}: {amount!r}")
-        if g["membership_function"] not in ("is_account_group_member", "is_member"):
-            raise ValueError("membership_function must be is_account_group_member or is_member")

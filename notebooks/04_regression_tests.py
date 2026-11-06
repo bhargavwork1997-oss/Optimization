@@ -35,8 +35,11 @@
 
 # COMMAND ----------
 
-import json, os
+import json
+import os
+
 from pyspark.sql import functions as F
+
 from dpo import pipeline, synth, validation
 
 if cfg.governance["enforce"] and not cfg.governance.get("operators_can_create_schemas"):
@@ -54,10 +57,16 @@ with open(os.path.join(REPO_ROOT, "tests", "golden", "small_seed42.json")) as fh
     golden = json.load(fh)
 snap = validation.snapshot(ctx)
 results += [
-    ("golden_findings_by_rule", snap["findings_by_rule"] == golden["findings_by_rule"],
-     json.dumps(snap["findings_by_rule"])),
-    ("golden_total_cost", abs(snap["total_cost"] - golden["total_cost"]) < 0.05,
-     f"{snap['total_cost']} vs {golden['total_cost']}"),
+    (
+        "golden_findings_by_rule",
+        snap["findings_by_rule"] == golden["findings_by_rule"],
+        json.dumps(snap["findings_by_rule"]),
+    ),
+    (
+        "golden_total_cost",
+        abs(snap["total_cost"] - golden["total_cost"]) < 0.05,
+        f"{snap['total_cost']} vs {golden['total_cost']}",
+    ),
     ("golden_top10_order", snap["top10_finding_ids"] == golden["top10_finding_ids"], ""),
 ]
 
@@ -69,8 +78,11 @@ results += [
 
 # COMMAND ----------
 
-res_df = (spark.createDataFrame([(n, bool(p), d) for n, p, d in results], "check string, passed boolean, detail string")
-          .withColumn("suite", F.lit("regression")).withColumn("run_ts", F.current_timestamp()))
+res_df = (
+    spark.createDataFrame([(n, bool(p), d) for n, p, d in results], "check string, passed boolean, detail string")
+    .withColumn("suite", F.lit("regression"))
+    .withColumn("run_ts", F.current_timestamp())
+)
 res_df.write.mode("append").saveAsTable(cfg.t("ops", "test_results"))
 display(res_df)
 

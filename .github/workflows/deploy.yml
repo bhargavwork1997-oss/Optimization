@@ -2,6 +2,7 @@
 # Each GitHub environment (enterprise_dev, enterprise_prod) holds its own secrets for a deploy
 # service principal (OAuth M2M): DATABRICKS_HOST, DATABRICKS_CLIENT_ID, DATABRICKS_CLIENT_SECRET.
 # For enterprise_prod the deploy SP needs the "Service principal: User" role on sp-dpo and sp-dpo-admin.
+# Protect the enterprise_prod environment in GitHub: required reviewers + deployment branch "main" only.
 name: dpo-deploy
 on:
   workflow_dispatch:
@@ -29,10 +30,14 @@ jobs:
       DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
       DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
       DATABRICKS_BUNDLE_ENV: ${{ inputs.target }}
+      TARGET: ${{ inputs.target }}            # used via env, never interpolated into shell (injection-safe)
     steps:
+      - name: Production deploys only from main
+        if: ${{ inputs.target == 'enterprise_prod' && github.ref != 'refs/heads/main' }}
+        run: echo "enterprise_prod can only be deployed from main" && exit 1
       - uses: actions/checkout@v4
-      - uses: databricks/setup-cli@main           # pin to a release tag or commit SHA
-      - run: databricks bundle validate -t "${{ inputs.target }}"
-      - run: databricks bundle deploy -t "${{ inputs.target }}"
+      - uses: databricks/setup-cli@8de769ec2543ee05e456ee2121350efc7efc4bda   # v1.22.1, pinned by SHA (supply chain)
+      - run: databricks bundle validate -t "$TARGET"
+      - run: databricks bundle deploy -t "$TARGET"
       - if: ${{ inputs.run_install }}
-        run: databricks bundle run dpo_install -t "${{ inputs.target }}"
+        run: databricks bundle run dpo_install -t "$TARGET"

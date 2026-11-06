@@ -1,4 +1,5 @@
 """Reusable, side-effect-free column helpers (safe under ANSI mode / serverless)."""
+
 from __future__ import annotations
 
 from pyspark.sql import Column, DataFrame
@@ -42,15 +43,18 @@ def query_fingerprint(col: Column) -> Column:
     return F.substring(F.sha2(normalize_sql(col), 256), 1, 16)
 
 
-def workload_key(job_id: Column, warehouse_id: Column, pipeline_id: Column,
-                 cluster_id: Column, notebook_id: Column, product: Column) -> Column:
+def workload_key(
+    job_id: Column, warehouse_id: Column, pipeline_id: Column, cluster_id: Column, notebook_id: Column, product: Column
+) -> Column:
     """Stable '<type>:<id>' key for a usage row (job, cluster, warehouse, pipeline, ...)."""
-    return (F.when(job_id.isNotNull(), F.concat(F.lit("job:"), job_id))
-             .when(warehouse_id.isNotNull(), F.concat(F.lit("warehouse:"), warehouse_id))
-             .when(pipeline_id.isNotNull(), F.concat(F.lit("pipeline:"), pipeline_id))
-             .when(cluster_id.isNotNull(), F.concat(F.lit("cluster:"), cluster_id))
-             .when(notebook_id.isNotNull(), F.concat(F.lit("notebook:"), notebook_id))
-             .otherwise(F.concat(F.lit("unattributed:"), F.coalesce(product, F.lit("UNKNOWN")))))
+    return (
+        F.when(job_id.isNotNull(), F.concat(F.lit("job:"), job_id))
+        .when(warehouse_id.isNotNull(), F.concat(F.lit("warehouse:"), warehouse_id))
+        .when(pipeline_id.isNotNull(), F.concat(F.lit("pipeline:"), pipeline_id))
+        .when(cluster_id.isNotNull(), F.concat(F.lit("cluster:"), cluster_id))
+        .when(notebook_id.isNotNull(), F.concat(F.lit("notebook:"), notebook_id))
+        .otherwise(F.concat(F.lit("unattributed:"), F.coalesce(product, F.lit("UNKNOWN"))))
+    )
 
 
 def workload_type(key: Column) -> Column:
@@ -93,9 +97,9 @@ def project(df: DataFrame, spec: list[tuple]) -> tuple[DataFrame, list[str]]:
 
 def split_valid(df: DataFrame, checks: dict[str, Column]) -> tuple[DataFrame, DataFrame]:
     """Return (valid, invalid). invalid carries a comma-separated dq_reason."""
-    reasons = F.concat_ws(",", F.array(*[
-        F.when(~F.coalesce(cond, F.lit(False)), F.lit(name)) for name, cond in checks.items()
-    ]))
+    reasons = F.concat_ws(
+        ",", F.array(*[F.when(~F.coalesce(cond, F.lit(False)), F.lit(name)) for name, cond in checks.items()])
+    )
     tagged = df.withColumn("dq_reason", reasons)
     valid = tagged.filter(F.col("dq_reason") == "").drop("dq_reason")
     invalid = tagged.filter(F.col("dq_reason") != "")
@@ -105,8 +109,10 @@ def split_valid(df: DataFrame, checks: dict[str, Column]) -> tuple[DataFrame, Da
 def checksum(df: DataFrame) -> tuple[int, int]:
     """(row_count, order-independent content hash) for regression snapshots."""
     # maps cannot be hashed in Spark; their JSON form can
-    cols = [F.to_json(F.col(f.name)) if isinstance(f.dataType, T.MapType) else F.col(f.name)
-            for f in df.schema.fields]
-    row = df.select(F.xxhash64(*cols).alias("h")).agg(
-        F.count(F.lit(1)).alias("n"), F.expr("bit_xor(h)").alias("x")).collect()[0]
+    cols = [F.to_json(F.col(f.name)) if isinstance(f.dataType, T.MapType) else F.col(f.name) for f in df.schema.fields]
+    row = (
+        df.select(F.xxhash64(*cols).alias("h"))
+        .agg(F.count(F.lit(1)).alias("n"), F.expr("bit_xor(h)").alias("x"))
+        .collect()[0]
+    )
     return int(row["n"]), int(row["x"] or 0)

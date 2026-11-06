@@ -31,6 +31,7 @@
 import os
 import sys
 
+
 def _project_root():
     """Folder holding src/ and config/. Works in a Git folder and in a bundle deployment
     (<root_path>/files/...): first the notebook's working directory, then the notebook path."""
@@ -44,8 +45,10 @@ def _project_root():
     for c in candidates:
         if os.path.isdir(os.path.join(c, "src", "dpo")) and os.path.isdir(os.path.join(c, "config")):
             return c
-    raise RuntimeError(f"Cannot find the DPO project (src/dpo and config/) from {candidates}. "
-                       "Run notebooks from the repo's notebooks/ folder or a bundle deployment.")
+    raise RuntimeError(
+        f"Cannot find the DPO project (src/dpo and config/) from {candidates}. "
+        "Run notebooks from the repo's notebooks/ folder or a bundle deployment."
+    )
 
 
 REPO_ROOT = _project_root()
@@ -55,13 +58,36 @@ if SRC not in sys.path:
 
 # Reload so edits in src/ are picked up without detaching the notebook
 import importlib
-import dpo, dpo.config, dpo.transforms, dpo.synth, dpo.pipeline, dpo.rules, dpo.recommend, dpo.validation, \
-    dpo.governance, dpo.installer, dpo.forecast, dpo.selfcost
-for m in (dpo.config, dpo.transforms, dpo.synth, dpo.pipeline, dpo.rules, dpo.recommend, dpo.validation,
-          dpo.governance, dpo.installer, dpo.forecast, dpo.selfcost):
+
+import dpo
+import dpo.config
+import dpo.forecast
+import dpo.governance
+import dpo.installer
+import dpo.pipeline
+import dpo.recommend
+import dpo.rules
+import dpo.selfcost
+import dpo.synth
+import dpo.transforms
+import dpo.validation
+
+for m in (
+    dpo.config,
+    dpo.transforms,
+    dpo.synth,
+    dpo.pipeline,
+    dpo.rules,
+    dpo.recommend,
+    dpo.validation,
+    dpo.governance,
+    dpo.installer,
+    dpo.forecast,
+    dpo.selfcost,
+):
     importlib.reload(m)
 
-from dpo.config import DPOConfig, PROFILE_DIR, detect_profile
+from dpo.config import PROFILE_DIR, DPOConfig, detect_profile
 
 # COMMAND ----------
 
@@ -71,6 +97,7 @@ from dpo.config import DPOConfig, PROFILE_DIR, detect_profile
 # MAGIC profile's `workspace_hosts`; no match falls back to `free_edition`.
 
 # COMMAND ----------
+
 
 def workspace_host():
     """This workspace's host name, or None. Tries Spark conf, then the notebook context."""
@@ -87,6 +114,7 @@ def workspace_host():
         pass
     try:
         from databricks.sdk import WorkspaceClient
+
         return WorkspaceClient().config.host
     except Exception:
         return None
@@ -125,11 +153,14 @@ def forecast_warehouse(cfg) -> str:
         return wh
     try:
         from databricks.sdk import WorkspaceClient
+
         from dpo.dashboard import find_warehouse
+
         return find_warehouse(WorkspaceClient())
     except Exception as exc:
         print(f"No SQL warehouse for ai_forecast ({type(exc).__name__}); the baseline forecast will be used.")
         return ""
+
 
 # COMMAND ----------
 
@@ -141,6 +172,7 @@ def forecast_warehouse(cfg) -> str:
 # MAGIC in `CFG_ERROR` to show it nicely instead of a stack trace.
 
 # COMMAND ----------
+
 
 def build_cfg(**overrides) -> DPOConfig:
     w = dbutils.widgets.get
@@ -155,7 +187,7 @@ def build_cfg(**overrides) -> DPOConfig:
     cfg = DPOConfig.from_profile(w("profile"), {**widget_vals, **overrides})
     cfg.table_format = "delta"
     cfg.rules_path = os.path.join(REPO_ROOT, "config", "rules.json")
-    if "schema_prefix" in overrides:            # an explicit "" must win over the profile
+    if "schema_prefix" in overrides:  # an explicit "" must win over the profile
         cfg.schema_prefix = overrides["schema_prefix"]
     cfg.forecast_warehouse_id = forecast_warehouse(cfg)
     cfg.validate()
@@ -172,5 +204,7 @@ except ValueError as e:
 
 if cfg is not None:
     g = cfg.governance
-    print(f"DPO {dpo.__version__} | workspace={HOST} | profile={cfg.profile} ({AUTO_REASON if cfg.profile == AUTO_PROFILE else 'chosen in widget'}) | "
-          f"catalog={cfg.catalog} prefix='{cfg.schema_prefix}' mode={cfg.source_mode} | governance enforce={g['enforce']}")
+    print(
+        f"DPO {dpo.__version__} | workspace={HOST} | profile={cfg.profile} ({AUTO_REASON if cfg.profile == AUTO_PROFILE else 'chosen in widget'}) | "
+        f"catalog={cfg.catalog} prefix='{cfg.schema_prefix}' mode={cfg.source_mode} | governance enforce={g['enforce']}"
+    )

@@ -18,6 +18,36 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  lint:
+    name: code standards (ruff, mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install -r requirements-dev.txt
+      - name: Lint (PEP 8, imports, naming, bugbear, complexity; settings in ruff.toml)
+        run: ruff check .
+      - name: Formatting
+        run: ruff format --check .
+      - name: Types
+        run: mypy src/dpo --ignore-missing-imports
+
+  sast:
+    name: static analysis and dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install bandit pip-audit
+      # B608 (SQL built from strings) is reviewed: only allow-listed identifiers, numbers and dates are
+      # interpolated (DPOConfig.validate). B101/B110/B112: asserts in notebooks, best-effort conf/audit calls.
+      - name: Bandit
+        run: bandit -q -r src notebooks -s B608,B101,B110,B112
+      - name: Known-vulnerable dependencies
+        run: pip-audit -r requirements-dev.txt
+
   bundle:
     name: asset-bundle compliance
     runs-on: ubuntu-latest
@@ -25,7 +55,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.11"}
-      - uses: databricks/setup-cli@main           # pin to a release tag or commit SHA
+      - uses: databricks/setup-cli@8de769ec2543ee05e456ee2121350efc7efc4bda   # v1.22.1, pinned by SHA (supply chain)
       - run: pip install pyyaml jsonschema pytest
       - name: Export the CLI's bundle schema
         run: databricks bundle schema > "$RUNNER_TEMP/bundle_schema.json"

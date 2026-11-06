@@ -1,8 +1,10 @@
 """Installer: step ordering/parallelism, access gate, job specs, and end-to-end install runs."""
+
 import copy
 import os
 import time
-from types import SimpleNamespace as NS
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,52 +22,63 @@ def _rec(log, key, secs=0.0, fail=False):
         if fail:
             raise RuntimeError(f"{key} broke")
         return {"ok": key}
+
     return fn
 
 
 def test_dependencies_order_and_parallel_branches():
     from dpo.installer import Step, run_plan
+
     log = []
-    steps = [Step("a", "A", _rec(log, "a", .05)),
-             Step("b", "B", _rec(log, "b", .3), deps=("a",)),
-             Step("c", "C", _rec(log, "c", .3), deps=("a",)),
-             Step("d", "D", _rec(log, "d"), deps=("b", "c"))]
+    steps = [
+        Step("a", "A", _rec(log, "a", 0.05)),
+        Step("b", "B", _rec(log, "b", 0.3), deps=("a",)),
+        Step("c", "C", _rec(log, "c", 0.3), deps=("a",)),
+        Step("d", "D", _rec(log, "d"), deps=("b", "c")),
+    ]
     res = run_plan(steps, on_event=lambda m: None)
     assert [r["status"] for r in res] == ["SUCCESS"] * 4
     t = {(e, k): ts for e, k, ts in log}
     assert t["start", "b"] >= t["end", "a"] and t["start", "c"] >= t["end", "a"]
-    assert t["start", "b"] < t["end", "c"] and t["start", "c"] < t["end", "b"]      # b and c overlapped
+    assert t["start", "b"] < t["end", "c"] and t["start", "c"] < t["end", "b"]  # b and c overlapped
     assert t["start", "d"] >= max(t["end", "b"], t["end", "c"])
 
 
 def test_critical_failure_stops_install_but_lets_running_steps_finish():
     from dpo.installer import Step, run_plan
+
     log = []
-    steps = [Step("base", "base", _rec(log, "base")),
-             Step("pipe", "pipe", _rec(log, "pipe", .05, fail=True), deps=("base",)),
-             Step("lab", "lab", _rec(log, "lab", .3), deps=("base",), critical=False),
-             Step("views", "views", _rec(log, "views"), deps=("pipe",)),
-             Step("later", "later", _rec(log, "later"), deps=("lab",))]
+    steps = [
+        Step("base", "base", _rec(log, "base")),
+        Step("pipe", "pipe", _rec(log, "pipe", 0.05, fail=True), deps=("base",)),
+        Step("lab", "lab", _rec(log, "lab", 0.3), deps=("base",), critical=False),
+        Step("views", "views", _rec(log, "views"), deps=("pipe",)),
+        Step("later", "later", _rec(log, "later"), deps=("lab",)),
+    ]
     res = {r["step"]: r for r in run_plan(steps, on_event=lambda m: None)}
     assert res["pipe"]["status"] == "FAILED" and "pipe broke" in res["pipe"]["detail"]
-    assert res["lab"]["status"] == "SUCCESS"                 # already running: allowed to finish
+    assert res["lab"]["status"] == "SUCCESS"  # already running: allowed to finish
     assert res["views"]["status"] == "SKIPPED" and res["later"]["status"] == "SKIPPED"
 
 
 def test_optional_failure_only_skips_its_dependents_and_disabled_counts_as_done():
     from dpo.installer import Step, run_plan
+
     log = []
-    steps = [Step("base", "base", _rec(log, "base")),
-             Step("off", "off", _rec(log, "off"), deps=("base",), enabled=False),
-             Step("lab", "lab", _rec(log, "lab", fail=True), deps=("base",), critical=False),
-             Step("after_lab", "after_lab", _rec(log, "x"), deps=("lab",)),
-             Step("pipe", "pipe", _rec(log, "pipe"), deps=("base", "off"))]
+    steps = [
+        Step("base", "base", _rec(log, "base")),
+        Step("off", "off", _rec(log, "off"), deps=("base",), enabled=False),
+        Step("lab", "lab", _rec(log, "lab", fail=True), deps=("base",), critical=False),
+        Step("after_lab", "after_lab", _rec(log, "x"), deps=("lab",)),
+        Step("pipe", "pipe", _rec(log, "pipe"), deps=("base", "off")),
+    ]
     res = {r["step"]: r["status"] for r in run_plan(steps, on_event=lambda m: None)}
     assert res == {"base": "SUCCESS", "off": "DISABLED", "lab": "FAILED", "after_lab": "SKIPPED", "pipe": "SUCCESS"}
 
 
 def test_unknown_dependency_rejected():
     from dpo.installer import Step, run_plan
+
     with pytest.raises(ValueError, match="unknown steps"):
         run_plan([Step("a", "a", lambda: 1, deps=("nope",))], on_event=lambda m: None)
 
@@ -74,19 +87,28 @@ def test_unknown_dependency_rejected():
 def test_classify_preflight_and_single_error_message():
     from dpo.config import DPOConfig
     from dpo.installer import blocked_message, blockers, classify_preflight
+
     cfg = DPOConfig.from_profile("enterprise_prod")
-    pre = [("identity", "INFO", "running as me@corp.com", ""),
-           ("catalog", "MISSING", "dpo not found", "CREATE CATALOG dpo"),
-           ("source system.billing.usage", "DENIED", "no access", "GRANT ..."),
-           ("source system.query.history", "DENIED", "no access", "GRANT ..."),
-           ("source system.compute.clusters", "EMPTY", "readable", ""),
-           ("group admins", "MISSING", "dpo-admins", "Create account group"),
-           ("admin rights", "NO", "me@corp.com is not a member of dpo-admins", ""),
-           ("run rights", "NO", "x", "")]
+    pre = [
+        ("identity", "INFO", "running as me@corp.com", ""),
+        ("catalog", "MISSING", "dpo not found", "CREATE CATALOG dpo"),
+        ("source system.billing.usage", "DENIED", "no access", "GRANT ..."),
+        ("source system.query.history", "DENIED", "no access", "GRANT ..."),
+        ("source system.compute.clusters", "EMPTY", "readable", ""),
+        ("group admins", "MISSING", "dpo-admins", "Create account group"),
+        ("admin rights", "NO", "me@corp.com is not a member of dpo-admins", ""),
+        ("run rights", "NO", "x", ""),
+    ]
     rows = {r[0]: r[1] for r in classify_preflight(cfg, pre)}
-    assert rows == {"identity": "INFO", "catalog": "WARN", "source system.billing.usage": "BLOCKER",
-                    "source system.query.history": "WARN", "source system.compute.clusters": "WARN",
-                    "group admins": "BLOCKER", "admin rights": "BLOCKER"}
+    assert rows == {
+        "identity": "INFO",
+        "catalog": "WARN",
+        "source system.billing.usage": "BLOCKER",
+        "source system.query.history": "WARN",
+        "source system.compute.clusters": "WARN",
+        "group admins": "BLOCKER",
+        "admin rights": "BLOCKER",
+    }
     msg = blocked_message(cfg, classify_preflight(cfg, pre))
     assert "3 access-control problem(s)" in msg and "Nothing was created or changed" in msg
     assert "Fix: Ask an account admin to add you to `dpo-admins`" in msg
@@ -96,6 +118,7 @@ def test_classify_preflight_and_single_error_message():
 def test_workspace_binding_and_profile_fit():
     from dpo.config import DPOConfig
     from dpo.installer import check_profile_fit, check_workspace_binding
+
     cfg = DPOConfig.from_profile("enterprise_prod", {"workspace_hosts": ["adb-1.1.azuredatabricks.net"]})
     assert check_workspace_binding(cfg, "https://adb-1.1.azuredatabricks.net/?o=1")[0][1] == "OK"
     assert check_workspace_binding(cfg, "adb-2.2.azuredatabricks.net")[0][1] == "BLOCKER"
@@ -108,26 +131,31 @@ def _fake_sdk(ops_members, admin_members, sps):
     def groups_list(filter, attributes):
         name = filter.split('"')[1]
         ids = {OPS: ops_members, ADMINS: admin_members}.get(name, [])
-        return [NS(members=[NS(value=i) for i in ids])]
+        return [SimpleNamespace(members=[SimpleNamespace(value=i) for i in ids])]
 
     def sps_list(filter):
         app = filter.split('"')[1]
-        return [NS(id=sps[app])] if app in sps else []
-    return NS(groups=NS(list=groups_list), service_principals=NS(list=sps_list))
+        return [SimpleNamespace(id=sps[app])] if app in sps else []
+
+    return SimpleNamespace(groups=SimpleNamespace(list=groups_list), service_principals=SimpleNamespace(list=sps_list))
 
 
 def test_service_principal_least_privilege_checks():
     from dpo.config import DPOConfig
     from dpo.installer import check_service_principals
+
     ok_, both_, adm_, ghost = (f"{i}0000000-0000-0000-0000-000000000000" for i in "1234")
     cfg = DPOConfig.from_profile("enterprise_prod")
     sdk = _fake_sdk(ops_members=["1", "2"], admin_members=["2", "9"], sps={ok_: "1", both_: "2", adm_: "9"})
-    sev = lambda r: {x[0]: (x[1], x[2]) for x in r}
+
+    def sev(rows):
+        return {x[0]: (x[1], x[2]) for x in rows}
+
     ok = sev(check_service_principals(cfg, ok_, adm_, sdk))
     assert ok["pipeline run-as"][0] == "OK" and ok["governance run-as"][0] == "OK"
     both = sev(check_service_principals(cfg, both_, ok_, sdk))
     assert both["pipeline run-as"][0] == "BLOCKER" and "also in `dpo-admins`" in both["pipeline run-as"][1]
-    assert both["governance run-as"][0] == "BLOCKER"                        # operator SP is not an admin
+    assert both["governance run-as"][0] == "BLOCKER"  # operator SP is not an admin
     missing = sev(check_service_principals(cfg, ghost, "", sdk))
     assert missing["pipeline run-as"][0] == "BLOCKER" and missing["governance run-as"][0] == "WARN"
     # anything that is not an application ID is refused before it reaches a SCIM filter or job setting
@@ -143,15 +171,15 @@ class _FakeJobs:
     def list(self, name=None):
         if name is None:
             return self.bundle_jobs
-        return [NS(job_id=self.existing[name][0])] if name in self.existing else []
+        return [SimpleNamespace(job_id=self.existing[name][0])] if name in self.existing else []
 
     def get(self, job_id):
         kind = next(v[1] for v in self.existing.values() if v[0] == job_id)
-        return NS(settings=NS(deployment=NS(kind=kind) if kind else None))
+        return SimpleNamespace(settings=SimpleNamespace(deployment=SimpleNamespace(kind=kind) if kind else None))
 
     def create(self, **kw):
         self.calls.append(("create", kw["name"], kw))
-        return NS(job_id=100 + len(self.calls))
+        return SimpleNamespace(job_id=100 + len(self.calls))
 
     def reset(self, job_id, new_settings):
         self.calls.append(("reset", new_settings.name, job_id))
@@ -164,6 +192,7 @@ def test_job_specs_use_real_sdk_types_and_least_privilege_acl():
     pytest.importorskip("databricks.sdk")
     from dpo.config import DPOConfig
     from dpo.installer import _to_sdk, job_specs
+
     cfg = DPOConfig.from_profile("enterprise_prod")
     specs = job_specs(cfg, "/Workspace/Repos/x/notebooks", run_as="app-op", admin_run_as="app-adm")
     assert [s["name"] for s in specs] == ["dpo-pipeline-enterprise_prod", "dpo-governance-enterprise_prod"]
@@ -171,7 +200,10 @@ def test_job_specs_use_real_sdk_types_and_least_privilege_acl():
     assert pipe["run_as"].service_principal_name == "app-op"
     assert [t.task_key for t in pipe["tasks"]] == ["generate_synthetic", "run_pipeline"]
     assert {(a.group_name, a.permission_level.value) for a in acl} == {
-        ("dpo-admins", "CAN_MANAGE"), ("dpo-operators", "CAN_MANAGE_RUN"), ("dpo-analysts", "CAN_VIEW")}
+        ("dpo-admins", "CAN_MANAGE"),
+        ("dpo-operators", "CAN_MANAGE_RUN"),
+        ("dpo-analysts", "CAN_VIEW"),
+    }
     _, gov, gacl = _to_sdk(cfg, specs[1])
     assert gov["run_as"].service_principal_name == "app-adm"
     assert [(a.group_name, a.permission_level.value) for a in gacl] == [("dpo-admins", "CAN_MANAGE")]
@@ -183,14 +215,19 @@ def test_schedule_jobs_create_update_and_respect_bundle():
     pytest.importorskip("databricks.sdk")
     from dpo.config import DPOConfig
     from dpo.installer import schedule_jobs
+
     cfg = DPOConfig.from_profile("enterprise_prod")
-    fake = _FakeJobs(existing={"dpo-pipeline-enterprise_prod": (7, "JobDeploymentKind.BUNDLE"),
-                               "dpo-governance-enterprise_prod": (8, None)})
-    out = schedule_jobs(cfg, NS(jobs=fake), "/Workspace/x", "app-op", "app-adm")
+    fake = _FakeJobs(
+        existing={
+            "dpo-pipeline-enterprise_prod": (7, "JobDeploymentKind.BUNDLE"),
+            "dpo-governance-enterprise_prod": (8, None),
+        }
+    )
+    out = schedule_jobs(cfg, SimpleNamespace(jobs=fake), "/Workspace/x", "app-op", "app-adm")
     assert [o["action"] for o in out] == ["left alone (managed by asset bundle)", "updated"]
     assert [c[0] for c in fake.calls] == ["reset", "perms"]
     fresh = _FakeJobs()
-    out = schedule_jobs(cfg, NS(jobs=fresh), "/Workspace/x")
+    out = schedule_jobs(cfg, SimpleNamespace(jobs=fresh), "/Workspace/x")
     assert [o["action"] for o in out] == ["created", "created"]
 
 
@@ -198,30 +235,50 @@ def test_installer_never_duplicates_bundle_jobs_even_with_dev_prefix():
     pytest.importorskip("databricks.sdk")
     from dpo.config import DPOConfig
     from dpo.installer import schedule_jobs
+
     cfg = DPOConfig.from_profile("enterprise_dev")
-    bundle_job = NS(job_id=42, settings=NS(name="[dev bhargav] dpo-pipeline-enterprise_dev",
-                                           tags={"app": "dpo-accelerator", "dpo_profile": "enterprise_dev"},
-                                           deployment=NS(kind="JobDeploymentKind.BUNDLE")))
-    other_profile = NS(job_id=43, settings=NS(name="dpo-pipeline-free_edition",
-                                              tags={"app": "dpo-accelerator", "dpo_profile": "free_edition"},
-                                              deployment=NS(kind="JobDeploymentKind.BUNDLE")))
+    bundle_job = SimpleNamespace(
+        job_id=42,
+        settings=SimpleNamespace(
+            name="[dev bhargav] dpo-pipeline-enterprise_dev",
+            tags={"app": "dpo-accelerator", "dpo_profile": "enterprise_dev"},
+            deployment=SimpleNamespace(kind="JobDeploymentKind.BUNDLE"),
+        ),
+    )
+    other_profile = SimpleNamespace(
+        job_id=43,
+        settings=SimpleNamespace(
+            name="dpo-pipeline-free_edition",
+            tags={"app": "dpo-accelerator", "dpo_profile": "free_edition"},
+            deployment=SimpleNamespace(kind="JobDeploymentKind.BUNDLE"),
+        ),
+    )
     fake = _FakeJobs(bundle_jobs=[bundle_job, other_profile])
-    out = schedule_jobs(cfg, NS(jobs=fake), "/Workspace/x")
+    out = schedule_jobs(cfg, SimpleNamespace(jobs=fake), "/Workspace/x")
     assert out == [{"job": "[dev bhargav] dpo-pipeline-enterprise_dev", "action": "managed by asset bundle", "id": 42}]
-    assert fake.calls == []                                      # nothing created or changed
+    assert fake.calls == []  # nothing created or changed
 
 
 # ------------------------------------------------------- end-to-end installs --
 def test_full_install_free_edition_style(spark):
     from dpo import installer
+
     cfg = local_cfg(prefix="inst_")
     events = []
     res = installer.run_plan(installer.build_plan(spark, cfg, "inst-1"), on_event=events.append)
     st = {r["step"]: r["status"] for r in res}
-    assert st == {"governance_base": "SUCCESS", "synthetic_data": "SUCCESS", "pipeline": "SUCCESS",
-                  "viewer_layer": "SUCCESS", "optimization_lab": "DISABLED", "regression_tests": "DISABLED",
-                  "verify": "SUCCESS", "schedule_jobs": "DISABLED",
-                  "dashboards": "DISABLED", "genie": "DISABLED"}
+    assert st == {
+        "governance_base": "SUCCESS",
+        "synthetic_data": "SUCCESS",
+        "pipeline": "SUCCESS",
+        "viewer_layer": "SUCCESS",
+        "optimization_lab": "DISABLED",
+        "regression_tests": "DISABLED",
+        "verify": "SUCCESS",
+        "schedule_jobs": "DISABLED",
+        "dashboards": "DISABLED",
+        "genie": "DISABLED",
+    }
     verify = next(r for r in res if r["step"] == "verify")["detail"]
     assert '"findings": 17' in verify
     # idempotent: a second install reuses data and succeeds
@@ -232,12 +289,13 @@ def test_full_install_free_edition_style(spark):
 
 def _enforced(base, groups, user):
     cfg = copy.deepcopy(base)
-    cfg.governance.update(enforce=True, simulate_user=user, simulate_membership={g: True for g in groups})
+    cfg.governance.update(enforce=True, simulate_user=user, simulate_membership=dict.fromkeys(groups, True))
     return cfg
 
 
 def test_gate_blocks_non_admin_and_changes_nothing(spark):
     from dpo import installer
+
     cfg = _enforced(local_cfg(prefix="instgate_"), [OPS], "op@corp.com")
     rows = installer.access_gate(spark, cfg, host=None)
     b = installer.blockers(rows)
@@ -252,6 +310,7 @@ def test_gate_blocks_non_admin_and_changes_nothing(spark):
 
 def test_full_install_enforced_as_admin_builds_secured_views(spark):
     from dpo import installer
+
     cfg = _enforced(local_cfg(prefix="instenf_"), [ADMINS], "admin@corp.com")
     cfg.governance["cost_center_groups"] = {"finance-cost-owners": ["cc-finance"]}
     assert not installer.blockers(installer.access_gate(spark, cfg))
@@ -264,9 +323,11 @@ def test_full_install_enforced_as_admin_builds_secured_views(spark):
 
 
 def test_publish_dashboards_creates_publishes_without_credentials_and_respects_bundle():
-    from types import SimpleNamespace as NS
+    from types import SimpleNamespace
+
     from dpo import dashboard
     from dpo.config import DPOConfig
+
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     cfg = DPOConfig.from_profile("enterprise_prod")
     calls = {"create": [], "update": [], "publish": [], "perms": [], "mkdirs": []}
@@ -274,47 +335,76 @@ def test_publish_dashboards_creates_publishes_without_credentials_and_respects_b
     class Lakeview:
         def __init__(self, existing=()):
             self.existing = list(existing)
+
         def list(self):
             return self.existing
+
         def create(self, d):
-            calls["create"].append(d); return NS(dashboard_id=f"new-{len(calls['create'])}")
+            calls["create"].append(d)
+            return SimpleNamespace(dashboard_id=f"new-{len(calls['create'])}")
+
         def update(self, i, d):
-            calls["update"].append((i, d)); return NS(dashboard_id=i)
+            calls["update"].append((i, d))
+            return SimpleNamespace(dashboard_id=i)
+
         def publish(self, i, embed_credentials=None, warehouse_id=None):
             calls["publish"].append((i, embed_credentials, warehouse_id))
 
-    sdk = NS(jobs=NS(list=lambda: []), lakeview=Lakeview(),
-             warehouses=NS(list=lambda: [NS(id="w1", name="Starter", enable_serverless_compute=False),
-                                         NS(id="w2", name="dpo-sql", enable_serverless_compute=True)]),
-             workspace=NS(mkdirs=lambda p: calls["mkdirs"].append(p)),
-             permissions=NS(set=lambda kind, i, access_control_list: calls["perms"].append((kind, i, access_control_list))))
+    sdk = SimpleNamespace(
+        jobs=SimpleNamespace(list=list),
+        lakeview=Lakeview(),
+        warehouses=SimpleNamespace(
+            list=lambda: [
+                SimpleNamespace(id="w1", name="Starter", enable_serverless_compute=False),
+                SimpleNamespace(id="w2", name="dpo-sql", enable_serverless_compute=True),
+            ]
+        ),
+        workspace=SimpleNamespace(mkdirs=lambda p: calls["mkdirs"].append(p)),
+        permissions=SimpleNamespace(
+            set=lambda kind, i, access_control_list: calls["perms"].append((kind, i, access_control_list))
+        ),
+    )
     out = dashboard.publish_dashboards(cfg, sdk, root, "/Workspace/Users/a@b/dpo")
     assert [o["action"].split(",")[0] for o in out] == ["created", "created"]
-    assert all(e is False and w == "w2" for _, e, w in calls["publish"])        # serverless chosen, no creds
+    assert all(e is False and w == "w2" for _, e, w in calls["publish"])  # serverless chosen, no creds
     assert calls["create"][0].parent_path == "/Workspace/Users/a@b/dpo" and calls["mkdirs"]
     eng_groups = {a.group_name for a in calls["perms"][1][2]}
     assert cfg.group("viewers") not in eng_groups and calls["perms"][0][0] == "dashboards"
     # second run updates in place
-    sdk.lakeview.existing = [NS(display_name=f"{t} ({cfg.profile})", dashboard_id=f"id{i}", path=f"/Workspace/Users/a@b/dpo/{i}")
-                             for i, t in enumerate(dashboard.DASHBOARDS.values())]
+    sdk.lakeview.existing = [
+        SimpleNamespace(
+            display_name=f"{t} ({cfg.profile})", dashboard_id=f"id{i}", path=f"/Workspace/Users/a@b/dpo/{i}"
+        )
+        for i, t in enumerate(dashboard.DASHBOARDS.values())
+    ]
     out = dashboard.publish_dashboards(cfg, sdk, root, "/Workspace/Users/a@b/dpo", "dpo-sql")
     assert [o["action"].split(",")[0] for o in out] == ["updated", "updated"]
     # unknown warehouse is a clear error
     with pytest.raises(RuntimeError, match="not found"):
         dashboard.publish_dashboards(cfg, sdk, root, "/x", "nope")
     # bundle-managed: change nothing
-    dep = NS(kind="BUNDLE")
-    sdk.jobs = NS(list=lambda: [NS(job_id=1, settings=NS(name="x", deployment=dep,
-                                                          tags={"app": "dpo-accelerator", "dpo_profile": cfg.profile}))])
+    dep = SimpleNamespace(kind="BUNDLE")
+    sdk.jobs = SimpleNamespace(
+        list=lambda: [
+            SimpleNamespace(
+                job_id=1,
+                settings=SimpleNamespace(
+                    name="x", deployment=dep, tags={"app": "dpo-accelerator", "dpo_profile": cfg.profile}
+                ),
+            )
+        ]
+    )
     n = len(calls["publish"])
     assert all("asset bundle" in o["action"] for o in dashboard.publish_dashboards(cfg, sdk, root, "/x"))
     assert len(calls["publish"]) == n
 
 
 def test_publish_genie_spaces_creates_updates_sets_acl_and_respects_bundle():
-    from types import SimpleNamespace as NS
+    from types import SimpleNamespace
+
     from dpo import genie
     from dpo.config import DPOConfig
+
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     cfg = DPOConfig.from_profile("enterprise_prod")
     calls = {"create": [], "update": [], "perms": []}
@@ -322,35 +412,62 @@ def test_publish_genie_spaces_creates_updates_sets_acl_and_respects_bundle():
     class Genie:
         def __init__(self):
             self.spaces = []
-        def list_spaces(self, page_token=None):
-            return NS(spaces=self.spaces, next_page_token=None)
-        def create_space(self, **kw):
-            calls["create"].append(kw); return NS(space_id=f"new-{len(calls['create'])}")
-        def update_space(self, space_id, **kw):
-            calls["update"].append((space_id, kw)); return NS(space_id=space_id)
 
-    sdk = NS(jobs=NS(list=lambda: []), genie=Genie(),
-             warehouses=NS(list=lambda: [NS(id="w2", name="dpo-sql", enable_serverless_compute=True)]),
-             workspace=NS(mkdirs=lambda p: None),
-             permissions=NS(set=lambda kind, i, access_control_list: calls["perms"].append((kind, i, access_control_list))))
+        def list_spaces(self, page_token=None):
+            return SimpleNamespace(spaces=self.spaces, next_page_token=None)
+
+        def create_space(self, **kw):
+            calls["create"].append(kw)
+            return SimpleNamespace(space_id=f"new-{len(calls['create'])}")
+
+        def update_space(self, space_id, **kw):
+            calls["update"].append((space_id, kw))
+            return SimpleNamespace(space_id=space_id)
+
+    sdk = SimpleNamespace(
+        jobs=SimpleNamespace(list=list),
+        genie=Genie(),
+        warehouses=SimpleNamespace(
+            list=lambda: [SimpleNamespace(id="w2", name="dpo-sql", enable_serverless_compute=True)]
+        ),
+        workspace=SimpleNamespace(mkdirs=lambda p: None),
+        permissions=SimpleNamespace(
+            set=lambda kind, i, access_control_list: calls["perms"].append((kind, i, access_control_list))
+        ),
+    )
     out = genie.publish_genie_spaces(cfg, sdk, root, "/Workspace/Users/a@b/genie")
     assert [o["action"] for o in out] == ["created", "created"]
     body = calls["create"][0]
     assert body["warehouse_id"] == "w2" and body["parent_path"] == "/Workspace/Users/a@b/genie"
-    assert body["serialized_space"] == open(genie.file_path(root, cfg.profile, "cost_optimization")).read()
+    assert body["serialized_space"] == Path(genie.file_path(root, cfg.profile, "cost_optimization")).read_text()
     assert calls["perms"][0][0] == "genie"
     assert cfg.group("viewers") not in {a.group_name for a in calls["perms"][1][2]}
     # second run updates in place; a same-named space in someone else's folder is not touched
-    sdk.genie.spaces = [NS(title=f"{t} ({cfg.profile})", space_id=f"id{i}", parent_path="/Users/a@b/genie")
-                        for i, t in enumerate(genie.SPACES.values())]
-    sdk.genie.spaces.append(NS(title=f"{genie.SPACES['engineering']} ({cfg.profile})", space_id="other",
-                               parent_path="/Users/someone/else"))
+    sdk.genie.spaces = [
+        SimpleNamespace(title=f"{t} ({cfg.profile})", space_id=f"id{i}", parent_path="/Users/a@b/genie")
+        for i, t in enumerate(genie.SPACES.values())
+    ]
+    sdk.genie.spaces.append(
+        SimpleNamespace(
+            title=f"{genie.SPACES['engineering']} ({cfg.profile})", space_id="other", parent_path="/Users/someone/else"
+        )
+    )
     out = genie.publish_genie_spaces(cfg, sdk, root, "/Workspace/Users/a@b/genie")
     assert [o["action"] for o in out] == ["updated", "updated"]
     assert [u[0] for u in calls["update"]] == ["id0", "id1"]
     # bundle-managed: change nothing
-    sdk.jobs = NS(list=lambda: [NS(job_id=1, settings=NS(name="x", deployment=NS(kind="BUNDLE"),
-                                                          tags={"app": "dpo-accelerator", "dpo_profile": cfg.profile}))])
+    sdk.jobs = SimpleNamespace(
+        list=lambda: [
+            SimpleNamespace(
+                job_id=1,
+                settings=SimpleNamespace(
+                    name="x",
+                    deployment=SimpleNamespace(kind="BUNDLE"),
+                    tags={"app": "dpo-accelerator", "dpo_profile": cfg.profile},
+                ),
+            )
+        ]
+    )
     n = len(calls["create"]) + len(calls["update"])
     assert all("asset bundle" in o["action"] for o in genie.publish_genie_spaces(cfg, sdk, root, "/x"))
     assert len(calls["create"]) + len(calls["update"]) == n
@@ -360,6 +477,7 @@ def test_install_regenerates_stale_synthetic_data(spark):
     """Synthetic data left by an earlier install ends before today's window: reusing it would leave the
     recent days empty and hide time-based findings (R08 runtime regression, R09 cost spike)."""
     from dpo import installer, synth
+
     old = local_cfg(prefix="inststale_", end_date="2026-10-20")
     synth.generate(spark, old, "small", seed=42, end_date="2026-10-20")
 
@@ -367,7 +485,7 @@ def test_install_regenerates_stale_synthetic_data(spark):
         steps = installer.build_plan(spark, cfg, "stale", include_lab=False, include_tests=False)
         return next(s for s in steps if s.key == "synthetic_data").fn()
 
-    fresh = local_cfg(prefix="inststale_", end_date="2026-10-21")      # one day later: still current
+    fresh = local_cfg(prefix="inststale_", end_date="2026-10-21")  # one day later: still current
     assert "reused" in gen_step(fresh)
     later = local_cfg(prefix="inststale_", end_date="2026-11-05")
     out = gen_step(later)

@@ -42,7 +42,7 @@
 
 # COMMAND ----------
 
-DPO_DEFER_CFG_ERRORS = True     # show profile errors as an install error below, not a stack trace
+DPO_DEFER_CFG_ERRORS = True  # show profile errors as an install error below, not a stack trace
 
 # COMMAND ----------
 
@@ -67,7 +67,7 @@ import json
 import uuid
 
 from dpo import governance, installer
-from dpo.installer import GATE_SCHEMA, InstallBlocked
+from dpo.installer import GATE_SCHEMA, InstallBlockedError
 
 dbutils.widgets.dropdown("mode", "install", ["install", "check_only"], "Mode")
 dbutils.widgets.text("pipeline_run_as", "", "Pipeline SP application ID (enterprise)")
@@ -86,11 +86,14 @@ ACCEPTED = tuple(c.strip() for c in dbutils.widgets.get("accepted_checks").split
 RUN_ID = f"install-{uuid.uuid4().hex[:8]}"
 
 if CFG_ERROR is not None:
-    raise InstallBlocked(f"DPO install BLOCKED: profile '{dbutils.widgets.get('profile')}' is invalid. "
-                         f"Nothing was changed.\n\n1. [profile] {CFG_ERROR}\n   Fix: correct the file in "
-                         f"config/environments/, commit, pull the Git folder, run again.")
+    raise InstallBlockedError(
+        f"DPO install BLOCKED: profile '{dbutils.widgets.get('profile')}' is invalid. "
+        f"Nothing was changed.\n\n1. [profile] {CFG_ERROR}\n   Fix: correct the file in "
+        f"config/environments/, commit, pull the Git folder, run again."
+    )
 try:
     from databricks.sdk import WorkspaceClient
+
     SDK = WorkspaceClient()
 except Exception:
     SDK = None
@@ -105,22 +108,26 @@ except Exception:
 
 # COMMAND ----------
 
-gate = installer.access_gate(spark, cfg, host=HOST, run_as=RUN_AS, admin_run_as=ADMIN_RUN_AS,
-                             sdk=SDK, accepted=ACCEPTED)
+gate = installer.access_gate(
+    spark, cfg, host=HOST, run_as=RUN_AS, admin_run_as=ADMIN_RUN_AS, sdk=SDK, accepted=ACCEPTED
+)
 order = {"BLOCKER": 0, "WARN": 1, "ACCEPTED": 2, "INFO": 3, "OK": 4}
 display(spark.createDataFrame(sorted(gate, key=lambda r: order.get(r[1], 9)), GATE_SCHEMA))
 
 if installer.blockers(gate):
-    governance.record_audit(spark, cfg, RUN_ID, "install", "BLOCKED",
-                            json.dumps([r[0] for r in installer.blockers(gate)]))
-    raise InstallBlocked(installer.blocked_message(cfg, gate))
+    governance.record_audit(
+        spark, cfg, RUN_ID, "install", "BLOCKED", json.dumps([r[0] for r in installer.blockers(gate)])
+    )
+    raise InstallBlockedError(installer.blocked_message(cfg, gate))
 
 accepted = [r[0] for r in gate if r[1] == "ACCEPTED"]
-if accepted:   # an admin overrode a blocker: keep a tamper-evident record of who and what
+if accepted:  # an admin overrode a blocker: keep a tamper-evident record of who and what
     governance.record_audit(spark, cfg, RUN_ID, "install", "BLOCKER_ACCEPTED", json.dumps(accepted))
 warns = [r for r in gate if r[1] == "WARN"]
-print(f"Access gate passed for profile '{cfg.profile}'"
-      + (f" with {len(warns)} warning(s): " + "; ".join(r[0] for r in warns) if warns else "."))
+print(
+    f"Access gate passed for profile '{cfg.profile}'"
+    + (f" with {len(warns)} warning(s): " + "; ".join(r[0] for r in warns) if warns else ".")
+)
 if MODE == "check_only":
     dbutils.notebook.exit("check_only: access gate passed; nothing installed")
 
@@ -149,8 +156,12 @@ if dbutils.widgets.get("schedule") != "none":
     if SDK is None or NOTEBOOK_DIR is None:
         print("Scheduling skipped: Databricks SDK or notebook path unavailable; deploy the asset bundle instead.")
     else:
-        schedule_fn = lambda: installer.schedule_jobs(cfg, SDK, NOTEBOOK_DIR, RUN_AS, ADMIN_RUN_AS,
-                                                      active=dbutils.widgets.get("schedule") == "active")
+
+        def schedule_fn():
+            return installer.schedule_jobs(
+                cfg, SDK, NOTEBOOK_DIR, RUN_AS, ADMIN_RUN_AS, active=dbutils.widgets.get("schedule") == "active"
+            )
+
 
 dashboard_fn = None
 if dbutils.widgets.get("dashboards") == "yes":
@@ -158,10 +169,13 @@ if dbutils.widgets.get("dashboards") == "yes":
         print("Dashboards skipped: Databricks SDK or notebook path unavailable; deploy the asset bundle instead.")
     else:
         from dpo import dashboard
+
         # outside the Git folder, so publishing never dirties the repo
         DASH_DIR = f"/Workspace/Users/{SDK.current_user.me().user_name}/dpo-dashboards-{cfg.profile}"
-        dashboard_fn = lambda: dashboard.publish_dashboards(cfg, SDK, REPO_ROOT, DASH_DIR,
-                                                            dbutils.widgets.get("warehouse").strip())
+
+        def dashboard_fn():
+            return dashboard.publish_dashboards(cfg, SDK, REPO_ROOT, DASH_DIR, dbutils.widgets.get("warehouse").strip())
+
 
 genie_fn = None
 if dbutils.widgets.get("genie") == "yes":
@@ -169,12 +183,17 @@ if dbutils.widgets.get("genie") == "yes":
         print("Genie spaces skipped: Databricks SDK or notebook path unavailable; deploy the asset bundle instead.")
     else:
         from dpo import genie
+
         GENIE_DIR = f"/Workspace/Users/{SDK.current_user.me().user_name}/dpo-genie-{cfg.profile}"
-        genie_fn = lambda: genie.publish_genie_spaces(cfg, SDK, REPO_ROOT, GENIE_DIR,
-                                                      dbutils.widgets.get("warehouse").strip())
+
+        def genie_fn():
+            return genie.publish_genie_spaces(cfg, SDK, REPO_ROOT, GENIE_DIR, dbutils.widgets.get("warehouse").strip())
+
 
 steps = installer.build_plan(
-    spark, cfg, RUN_ID,
+    spark,
+    cfg,
+    RUN_ID,
     run_notebook=lambda path, args, timeout: dbutils.notebook.run(path, timeout, args),
     include_lab=dbutils.widgets.get("include_lab") == "yes",
     schedule_fn=schedule_fn,
@@ -185,12 +204,20 @@ results = installer.run_plan(steps, max_parallel=3)
 
 failed_critical = [r for r in results if r["status"] in ("FAILED",) and r["critical"]]
 failed_optional = [r for r in results if r["status"] == "FAILED" and not r["critical"]]
-governance.record_audit(spark, cfg, RUN_ID, "install",
-                        "FAILED" if failed_critical else ("PARTIAL" if failed_optional else "SUCCESS"),
-                        json.dumps({r["step"]: r["status"] for r in results}))
-display(spark.createDataFrame([(r["title"], r["status"], r["critical"], r["seconds"], r["detail"][:1000])
-                               for r in results],
-                              "step string, status string, critical boolean, seconds double, detail string"))
+governance.record_audit(
+    spark,
+    cfg,
+    RUN_ID,
+    "install",
+    "FAILED" if failed_critical else ("PARTIAL" if failed_optional else "SUCCESS"),
+    json.dumps({r["step"]: r["status"] for r in results}),
+)
+display(
+    spark.createDataFrame(
+        [(r["title"], r["status"], r["critical"], r["seconds"], r["detail"][:1000]) for r in results],
+        "step string, status string, critical boolean, seconds double, detail string",
+    )
+)
 if failed_critical:
     msg = "\n".join(f"- {r['title']}: {r['detail'][:600]}" for r in failed_critical)
     raise RuntimeError(f"DPO install FAILED at a required step (later steps skipped). Fix and run again:\n{msg}")
@@ -207,8 +234,10 @@ summary = next(r for r in results if r["step"] == "verify")["detail"]
 print(f"DPO installed for profile '{cfg.profile}'. {summary}")
 for r in failed_optional:
     print(f"Optional step needs attention: {r['title']}: {r['detail'][:300]}")
-display(spark.sql(f"""
+display(
+    spark.sql(f"""
   SELECT r.priority, r.score, r.title, r.workload_key, round(r.est_monthly_savings, 2) AS est_monthly_savings,
          n.narrative
-  FROM {cfg.t('gold', 'recommendations')} r JOIN {cfg.t('gold', 'recommendation_narratives')} n USING (finding_id)
-  ORDER BY r.score DESC LIMIT 25"""))
+  FROM {cfg.t("gold", "recommendations")} r JOIN {cfg.t("gold", "recommendation_narratives")} n USING (finding_id)
+  ORDER BY r.score DESC LIMIT 25""")
+)

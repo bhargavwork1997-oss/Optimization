@@ -4,6 +4,7 @@ If a code or rule change alters what the tool reports, the golden snapshot
 fails and the diff is reviewed in the PR (then refreshed with
 DPO_UPDATE_GOLDEN=1 pytest tests/test_regression.py).
 """
+
 import json
 import os
 
@@ -17,6 +18,7 @@ GOLDEN = os.path.join(os.path.dirname(__file__), "golden", "small_seed42.json")
 @pytest.fixture(scope="module")
 def ctx(spark):
     from dpo import pipeline, synth
+
     cfg = local_cfg(prefix="reg_")
     synth.generate(spark, cfg, scale="small", seed=42, end_date="2026-10-27")
     return pipeline.run_all(spark, cfg, run_id="regression")
@@ -24,17 +26,29 @@ def ctx(spark):
 
 def test_all_checks_pass(ctx):
     from dpo.validation import run_all_checks
+
     failed = [r for r in run_all_checks(ctx) if not r[1]]
     assert not failed, failed
 
 
 def test_every_stage_logged_success(ctx):
-    assert [l["stage"] for l in ctx.log] == ["bronze", "silver", "gold", "rules", "recommend", "narrate", "forecast", "self_cost", "govern"]
-    assert all(l["status"] == "SUCCESS" for l in ctx.log)
+    assert [entry["stage"] for entry in ctx.log] == [
+        "bronze",
+        "silver",
+        "gold",
+        "rules",
+        "recommend",
+        "narrate",
+        "forecast",
+        "self_cost",
+        "govern",
+    ]
+    assert all(entry["status"] == "SUCCESS" for entry in ctx.log)
 
 
 def test_golden_snapshot(ctx):
     from dpo.validation import snapshot
+
     snap = snapshot(ctx)
     if os.environ.get("DPO_UPDATE_GOLDEN") or not os.path.exists(GOLDEN):
         os.makedirs(os.path.dirname(GOLDEN), exist_ok=True)
@@ -53,6 +67,7 @@ def test_idempotent_rerun(spark, ctx):
     """Running the pipeline again on the same inputs changes nothing."""
     from dpo import pipeline
     from dpo.validation import snapshot
+
     before = snapshot(ctx)
     again = pipeline.run_all(spark, ctx.cfg, run_id="regression-rerun")
     assert snapshot(again) == before

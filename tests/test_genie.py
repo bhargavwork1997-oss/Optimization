@@ -1,9 +1,11 @@
 """Genie spaces as code: files are current, follow the serialized_space rules the API enforces, read only
 allowed layers, never sample values from secured views, and every example/benchmark SQL runs against the
 real pipeline output."""
+
 import json
 import os
 import re
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +19,7 @@ WRITE_SQL = re.compile(r"\b(INSERT|UPDATE|DELETE|MERGE|CREATE|DROP|ALTER|GRANT|R
 
 def _cfg(profile):
     from dpo.config import DPOConfig
+
     cfg = DPOConfig.from_profile(profile)
     cfg.rules_path = os.path.join(ROOT, "config", "rules.json")
     return cfg
@@ -25,11 +28,13 @@ def _cfg(profile):
 @pytest.mark.parametrize("profile", PROFILES)
 def test_generated_files_are_current(profile):
     from dpo.genie import SPACES, file_path, render
+
     for key in SPACES:
         path = file_path(ROOT, profile, key)
         assert os.path.isfile(path), f"missing {path}: run `cd src && python -m dpo.genie`"
-        assert open(path, encoding="utf-8").read() == render(_cfg(profile), key), \
+        assert Path(path).read_text(encoding="utf-8") == render(_cfg(profile), key), (
             f"{path} is stale: run `cd src && python -m dpo.genie` and commit"
+        )
 
 
 def _ids(space):
@@ -44,6 +49,7 @@ def _ids(space):
         elif isinstance(x, list):
             for v in x:
                 walk(v)
+
     walk(space)
     return out
 
@@ -53,6 +59,7 @@ def test_serialized_space_rules(profile):
     """Version 2; 32-hex unique ids; arrays sorted; text fields are lists of strings; no id on tables;
     benchmark SQL inside answer[].content; limits."""
     from dpo.genie import SPACES, build
+
     seen = set()
     for key in SPACES:
         s = build(_cfg(profile), key)
@@ -67,8 +74,13 @@ def test_serialized_space_rules(profile):
             cc = [c["column_name"] for c in t.get("column_configs", [])]
             assert cc == sorted(cc) and len(cc) == len(set(cc))
         ins = s["instructions"]
-        for arr in (s["config"]["sample_questions"], ins["text_instructions"], ins["example_question_sqls"],
-                    ins["sql_snippets"]["measures"], s["benchmarks"]["questions"]):
+        for arr in (
+            s["config"]["sample_questions"],
+            ins["text_instructions"],
+            ins["example_question_sqls"],
+            ins["sql_snippets"]["measures"],
+            s["benchmarks"]["questions"],
+        ):
             assert [x["id"] for x in arr] == sorted(x["id"] for x in arr)
         assert len(ins["text_instructions"]) == 1
         for q in s["config"]["sample_questions"]:
@@ -85,11 +97,15 @@ def test_serialized_space_rules(profile):
 def test_spaces_read_only_their_allowed_layers(profile):
     from dpo.config import LAYERS
     from dpo.genie import ALLOWED_LAYERS, build
+
     cfg = _cfg(profile)
     for key, allowed in ALLOWED_LAYERS.items():
         s = build(cfg, key)
         idents = [t["identifier"] for t in s["data_sources"]["tables"]]
-        assert idents and all(any(i.startswith(cfg.schema(l) + ".") for l in allowed) for i in idents), (key, idents)
+        assert idents and all(any(i.startswith(cfg.schema(layer) + ".") for layer in allowed) for i in idents), (
+            key,
+            idents,
+        )
         sql = json.dumps(s["instructions"]["example_question_sqls"]) + json.dumps(s["benchmarks"])
         assert "system." not in sql.lower()
         for layer in set(LAYERS) - set(allowed):
@@ -103,14 +119,16 @@ def test_no_value_sampling_on_secured_views(profile):
     """Prompt matching samples values with the author's rights and shares them with every reader: on the
     row-filtered reporting views that would leak other cost centres. Every column must be switched off."""
     from dpo.genie import TABLES, build
+
     cfg = _cfg(profile)
     s = build(cfg, "cost_optimization")
     for t in s["data_sources"]["tables"]:
         layer_name = next(k for k in TABLES["cost_optimization"] if cfg.t(*k) == t["identifier"])
         cols = {c["column_name"]: c for c in t["column_configs"]}
         assert set(cols) == set(TABLES["cost_optimization"][layer_name]), t["identifier"]
-        assert all(c["enable_format_assistance"] is False and c["enable_entity_matching"] is False
-                   for c in cols.values())
+        assert all(
+            c["enable_format_assistance"] is False and c["enable_entity_matching"] is False for c in cols.values()
+        )
         assert not any(k in c for c in cols.values() for k in ("get_example_values", "build_value_dictionary"))
     eng = {t["identifier"]: t for t in build(cfg, "engineering")["data_sources"]["tables"]}
     run_as = {c["column_name"]: c for c in eng[cfg.t("gold", "cost_by_dimension")]["column_configs"]}["run_as"]
@@ -120,6 +138,7 @@ def test_no_value_sampling_on_secured_views(profile):
 @pytest.mark.parametrize("profile", PROFILES)
 def test_static_text_is_read_only_and_client_free(profile):
     from dpo.genie import build
+
     for key in ("cost_optimization", "engineering"):
         s = build(_cfg(profile), key)
         for e in s["instructions"]["example_question_sqls"]:
@@ -130,6 +149,7 @@ def test_static_text_is_read_only_and_client_free(profile):
 
 def test_acl():
     from dpo.genie import genie_acl
+
     prod = _cfg("enterprise_prod")
     cost = {a["group_name"]: a["permission_level"] for a in genie_acl(prod, "cost_optimization")}
     eng = {a["group_name"]: a["permission_level"] for a in genie_acl(prod, "engineering")}
@@ -144,6 +164,7 @@ def test_acl():
 def built(spark):
     from dpo import pipeline, synth
     from dpo.governance import apply, build_views
+
     cfg = local_cfg(prefix="gni_")
     cfg.rules_path = os.path.join(ROOT, "config", "rules.json")
     synth.generate(spark, cfg, scale="small", seed=42, end_date="2026-10-27")
@@ -155,6 +176,7 @@ def built(spark):
 
 def test_declared_columns_match_tables(spark, built):
     from dpo.genie import TABLES
+
     for key, tables in TABLES.items():
         for (layer, name), cols in tables.items():
             actual = spark.table(built.t(layer, name)).columns
@@ -165,9 +187,11 @@ def test_declared_columns_match_tables(spark, built):
 @pytest.mark.parametrize("key", ["cost_optimization", "engineering"])
 def test_every_example_and_benchmark_runs(spark, built, key):
     from dpo.genie import build
+
     s = build(built, key)
-    sqls = ["".join(e["sql"]) for e in s["instructions"]["example_question_sqls"]] + \
-           ["".join(b["answer"][0]["content"]) for b in s["benchmarks"]["questions"]]
+    sqls = ["".join(e["sql"]) for e in s["instructions"]["example_question_sqls"]] + [
+        "".join(b["answer"][0]["content"]) for b in s["benchmarks"]["questions"]
+    ]
     assert sqls
     for sql in sqls:
         df = spark.sql(sql)
@@ -180,6 +204,7 @@ def test_every_example_and_benchmark_runs(spark, built, key):
 
 def test_cost_examples_return_rows(spark, built):
     from dpo.genie import build
+
     s = build(built, "cost_optimization")
     for e in s["instructions"]["example_question_sqls"]:
         assert spark.sql("".join(e["sql"])).count() > 0, e["question"]

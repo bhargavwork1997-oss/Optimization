@@ -149,6 +149,22 @@ pytest -q -m "not slow"                # unit, regression (golden), chaos, gover
 pytest -q -m slow                      # 5x volume
 ```
 
+## Code standards
+
+| Area | Standard | Check |
+|---|---|---|
+| Python style | PEP 8, 120-character lines, Black-compatible formatting | `ruff check .` · `ruff format --check .` (settings in `ruff.toml`) |
+| Imports, naming, common bugs | isort order, pep8-naming, bugbear, pyupgrade, simplify | included in `ruff check` |
+| Complexity | cyclomatic complexity ≤ 20 per function | included in `ruff check` |
+| Types | every public function annotated; `mypy` clean | `mypy src/dpo --ignore-missing-imports` |
+| Documentation | module header and docstring on every public module, class and function; notebook header and a note above every cell | review |
+| Security | Bandit, dependency audit, secret scan; SQL only from allow-listed values (`DPOConfig.validate`) | CI `sast`, `secret-scan` |
+| Tests | pytest: unit, regression (golden), stress, governance, security, bundle | `pytest -q` |
+
+All of these run in CI on every pull request. Two conventions are deliberate: `from pyspark.sql import functions as F`
+(the PySpark idiom), and notebooks using names defined by `%run ./_common`.
+
+
 ## Repo layout
 
 ```

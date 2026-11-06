@@ -50,11 +50,13 @@ dbutils.widgets.dropdown("scale", "small", ["small", "medium", "large", "xl"], "
 dbutils.widgets.text("seed", "42", "Seed")
 dbutils.widgets.dropdown("chaos", "false", ["false", "true"], "Inject data defects")
 
-from dpo import synth
 import json
 
+from dpo import synth
+
 manifest = synth.generate(
-    spark, cfg,
+    spark,
+    cfg,
     scale=dbutils.widgets.get("scale"),
     seed=int(dbutils.widgets.get("seed")),
     end_date=cfg.end_date,

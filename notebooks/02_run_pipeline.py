@@ -41,8 +41,9 @@
 
 # COMMAND ----------
 
-from dpo import pipeline
 from pyspark.sql import functions as F
+
+from dpo import pipeline
 
 ctx = pipeline.run_all(spark, cfg)
 display(spark.createDataFrame(ctx.log))
@@ -69,13 +70,15 @@ display(spark.table(cfg.t("ops", "rule_status")).orderBy("rule_id"))
 
 # COMMAND ----------
 
-display(spark.sql(f"""
+display(
+    spark.sql(f"""
   SELECT r.rank, r.priority, r.score, r.title, r.workload_key,
          round(r.metric_value, 3) AS metric, r.threshold,
          round(r.est_monthly_savings, 2) AS est_monthly_savings, n.narrative
-  FROM {cfg.t('gold', 'recommendations')} r
-  JOIN {cfg.t('gold', 'recommendation_narratives')} n USING (finding_id)
-  ORDER BY r.rank"""))
+  FROM {cfg.t("gold", "recommendations")} r
+  JOIN {cfg.t("gold", "recommendation_narratives")} n USING (finding_id)
+  ORDER BY r.rank""")
+)
 
 # COMMAND ----------
 

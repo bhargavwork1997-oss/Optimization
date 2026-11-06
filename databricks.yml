@@ -31,6 +31,7 @@ sync:
     - "docs/**"
     - "requirements-dev.txt"
     - "pytest.ini"
+    - "ruff.toml"
 
 variables:
   profile:
@@ -287,9 +288,9 @@ targets:
             - {level: CAN_MANAGE_RUN, group_name: "${var.operators_group}"}
             - {level: CAN_VIEW, group_name: "${var.analysts_group}"}
         dpo_install:
+          # permissions: bundle-level only (admins manage) -> admins-only job
           run_as:
             service_principal_name: ${var.admin_service_principal}
-          # permissions: bundle-level only (admins manage) -> admins-only job
         dpo_governance:
           name: dpo-governance-${var.profile}
           max_concurrent_runs: 1

@@ -4,7 +4,9 @@ Unity Catalog statements (GRANT, OWNER, TAGS) cannot run on local Spark, so they
 as generated SQL. Row filtering, salted identity hashing, inference masking, authorization,
 audit, raw-SQL minimisation and pricing ARE executed locally with simulated group membership.
 """
+
 import copy
+from types import SimpleNamespace
 
 import pytest
 from pyspark.sql import functions as F
@@ -17,6 +19,7 @@ ADMINS, OPS, ANA, VIEW = "dpo-admins", "dpo-operators", "dpo-analysts", "dpo-vie
 # ------------------------------------------------------------------ profiles --
 def test_all_profiles_load_and_validate():
     from dpo.config import DPOConfig
+
     for name in ("free_edition", "enterprise_dev", "enterprise_prod"):
         cfg = DPOConfig.from_profile(name)
         cfg.validate()
@@ -30,6 +33,7 @@ def test_all_profiles_load_and_validate():
 
 def test_profile_overrides_and_errors():
     from dpo.config import DPOConfig
+
     cfg = DPOConfig.from_profile("enterprise_prod", {"catalog": "acme_dpo", "lookback_days": 45, "end_date": ""})
     assert cfg.catalog == "acme_dpo" and cfg.lookback_days == 45 and cfg.end_date is None
     assert cfg.group("admins") == ADMINS
@@ -39,16 +43,20 @@ def test_profile_overrides_and_errors():
         DPOConfig.from_dict({"catalg": "x"})
 
 
-@pytest.mark.parametrize("field,value,msg", [
-    ("catalog", "dpo; DROP CATALOG x", "illegal characters in catalog"),
-    ("schema_prefix", "a`b", "illegal characters in schema_prefix"),
-    ("managed_location", "abfss://x/'; DROP", "managed_location"),
-    ("inventory_catalogs", ["ok", "bad name"], "inventory catalog"),
-    ("contract_prices", {"%JOBS%'": 0.1}, "bad contract price"),
-    ("ai_endpoint", "x'); DROP", "illegal ai_endpoint"),
-])
+@pytest.mark.parametrize(
+    "field,value,msg",
+    [
+        ("catalog", "dpo; DROP CATALOG x", "illegal characters in catalog"),
+        ("schema_prefix", "a`b", "illegal characters in schema_prefix"),
+        ("managed_location", "abfss://x/'; DROP", "managed_location"),
+        ("inventory_catalogs", ["ok", "bad name"], "inventory catalog"),
+        ("contract_prices", {"%JOBS%'": 0.1}, "bad contract price"),
+        ("ai_endpoint", "x'); DROP", "illegal ai_endpoint"),
+    ],
+)
 def test_sql_injection_inputs_are_rejected(field, value, msg):
     from dpo.config import DPOConfig
+
     cfg = DPOConfig.from_profile("enterprise_prod")
     setattr(cfg, field, value)
     with pytest.raises(ValueError, match=msg):
@@ -57,6 +65,7 @@ def test_sql_injection_inputs_are_rejected(field, value, msg):
 
 def test_group_and_cost_center_injection_rejected():
     from dpo.config import DPOConfig
+
     cfg = DPOConfig.from_profile("enterprise_prod")
     cfg.governance["groups"]["viewers"] = "evil'); DROP"
     with pytest.raises(ValueError, match="illegal character in group"):
@@ -69,6 +78,7 @@ def test_group_and_cost_center_injection_rejected():
 
 def test_test_hooks_refused_against_unity_catalog():
     from dpo.config import DPOConfig
+
     cfg = DPOConfig.from_profile("enterprise_prod")
     cfg.governance["simulate_membership"] = {OPS: True}
     with pytest.raises(ValueError, match="test-only"):
@@ -77,6 +87,7 @@ def test_test_hooks_refused_against_unity_catalog():
 
 def test_external_ai_endpoint_needs_explicit_approval():
     from dpo.config import DPOConfig
+
     cfg = DPOConfig.from_profile("enterprise_prod", {"ai_enabled": True, "ai_endpoint": "openai-gpt"})
     with pytest.raises(ValueError, match="Databricks-hosted"):
         cfg.validate()
@@ -92,20 +103,27 @@ def _sql(stmts):
 def test_grant_plan_least_privilege():
     from dpo.config import DPOConfig
     from dpo.governance import plan_grants, plan_security, plan_setup
+
     cfg = DPOConfig.from_profile("enterprise_prod", {"managed_location": "abfss://dpo@acct.dfs.core.windows.net/"})
     setup, grants = _sql(plan_setup(cfg)), _sql(plan_grants(cfg))
     assert setup[0] == "CREATE CATALOG IF NOT EXISTS dpo MANAGED LOCATION 'abfss://dpo@acct.dfs.core.windows.net/'"
     assert f"ALTER CATALOG dpo OWNER TO `{ADMINS}`" in grants
-    assert all(f"ALTER SCHEMA dpo.{l} OWNER TO `{ADMINS}`" in grants for l in ("bronze", "reporting", "security"))
+    assert all(
+        f"ALTER SCHEMA dpo.{layer} OWNER TO `{ADMINS}`" in grants for layer in ("bronze", "reporting", "security")
+    )
     assert f"ALTER TABLE dpo.ops.audit_log OWNER TO `{ADMINS}`" in grants
     assert f"ALTER VIEW dpo.reporting.recommendations OWNER TO `{ADMINS}`" in grants
 
     def who(grp):
         return " ".join(g for g in grants if f"`{grp}`" in g and not g.startswith("ALTER"))
+
     # viewers: catalog browse + reporting only
-    assert sorted(g for g in grants if f"`{VIEW}`" in g) == sorted([
-        f"GRANT USE CATALOG ON CATALOG dpo TO `{VIEW}`",
-        f"GRANT USE SCHEMA, SELECT ON SCHEMA dpo.reporting TO `{VIEW}`"])
+    assert sorted(g for g in grants if f"`{VIEW}`" in g) == sorted(
+        [
+            f"GRANT USE CATALOG ON CATALOG dpo TO `{VIEW}`",
+            f"GRANT USE SCHEMA, SELECT ON SCHEMA dpo.reporting TO `{VIEW}`",
+        ]
+    )
     # analysts: never raw/sensitive objects
     for forbidden in ("dpo.bronze", "dpo.sim", "dpo.security", "quarantine", "audit_log"):
         assert forbidden not in who(ANA), forbidden
@@ -122,6 +140,7 @@ def test_grant_plan_least_privilege():
 def test_system_grants_only_when_enabled():
     from dpo.config import DPOConfig
     from dpo.governance import plan_grants
+
     cfg = DPOConfig.from_profile("enterprise_prod")
     cfg.governance["grant_system_access"] = True
     sys_grants = [g for g in _sql(plan_grants(cfg)) if "system." in g]
@@ -132,6 +151,7 @@ def test_system_grants_only_when_enabled():
 def test_free_edition_creates_no_catalog_and_filters_nothing():
     from dpo.config import DPOConfig
     from dpo.governance import plan_setup, privileged_expr, row_visibility_expr
+
     cfg = DPOConfig.from_profile("free_edition")
     assert not any("CREATE CATALOG" in s for s in _sql(plan_setup(cfg)))
     assert privileged_expr(cfg) == "true" and row_visibility_expr(cfg) == "true"
@@ -141,6 +161,7 @@ def test_free_edition_creates_no_catalog_and_filters_nothing():
 @pytest.fixture(scope="module")
 def gov(spark):
     from dpo import governance, pipeline, synth
+
     cfg = local_cfg(prefix="gov_")
     synth.generate(spark, cfg, scale="small", seed=42, end_date="2026-10-27")
     pipeline.run_all(spark, cfg, run_id="gov")
@@ -150,22 +171,32 @@ def gov(spark):
 
 def _as(base, groups, user="someone@corp.com", cc_groups=None):
     cfg = copy.deepcopy(base)
-    cfg.governance.update(enforce=True, simulate_user=user,
-                          simulate_membership={g: True for g in groups},
-                          cost_center_groups=cc_groups if cc_groups is not None else {"finance-cost-owners": ["cc-finance"]})
+    cfg.governance.update(
+        enforce=True,
+        simulate_user=user,
+        simulate_membership=dict.fromkeys(groups, True),
+        cost_center_groups=cc_groups if cc_groups is not None else {"finance-cost-owners": ["cc-finance"]},
+    )
     return cfg
 
 
 def _views(spark, cfg):
     from dpo.governance import apply, build_views
+
     rows = apply(spark, cfg, build_views(spark, cfg), "gov-test")
     assert all(r[3] == "OK" for r in rows), rows
 
 
 def test_viewer_sees_only_own_cost_center(spark, gov):
     _views(spark, _as(gov, ["finance-cost-owners"]))
-    for v in ("recommendations", "workload_summary", "cost_by_dimension", "job_scorecard", "budget_outlook",
-              "cost_forecast"):
+    for v in (
+        "recommendations",
+        "workload_summary",
+        "cost_by_dimension",
+        "job_scorecard",
+        "budget_outlook",
+        "cost_forecast",
+    ):
         ccs = {r[0] for r in spark.table(f"gov_reporting.{v}").select("cost_center").distinct().collect()}
         assert ccs == {"cc-finance"}, (v, ccs)
 
@@ -174,11 +205,21 @@ def test_viewer_identities_salted_hashed(spark, gov):
     _views(spark, _as(gov, ["finance-cost-owners"]))
     masked = {r.run_as for r in spark.table("gov_reporting.cost_by_dimension").select("run_as").distinct().collect()}
     assert masked and all(u.startswith("user-") and "@" not in u for u in masked)
-    raw = [r.run_as for r in spark.table("gov_gold.cost_by_dimension").filter("cost_center = 'cc-finance'")
-           .select("run_as").distinct().collect()]
-    unsalted = {r.h for r in spark.createDataFrame([(u,) for u in raw], "u string")
-                .select(F.concat(F.lit("user-"), F.substring(F.sha2(F.lower("u"), 256), 1, 12)).alias("h")).collect()}
-    assert not masked & unsalted          # a dictionary of employee emails cannot reverse the hash
+    raw = [
+        r.run_as
+        for r in spark.table("gov_gold.cost_by_dimension")
+        .filter("cost_center = 'cc-finance'")
+        .select("run_as")
+        .distinct()
+        .collect()
+    ]
+    unsalted = {
+        r.h
+        for r in spark.createDataFrame([(u,) for u in raw], "u string")
+        .select(F.concat(F.lit("user-"), F.substring(F.sha2(F.lower("u"), 256), 1, 12)).alias("h"))
+        .collect()
+    }
+    assert not masked & unsalted  # a dictionary of employee emails cannot reverse the hash
 
 
 def test_viewer_cannot_infer_account_totals(spark, gov):
@@ -212,6 +253,7 @@ def test_analyst_sees_everything_unmasked(spark, gov):
 
 def test_unauthorised_user_cannot_run_pipeline_and_is_audited(spark, gov):
     from dpo import pipeline
+
     cfg = _as(gov, [VIEW], user="intruder@corp.com")
     with pytest.raises(PermissionError, match="intruder@corp.com is not a member"):
         pipeline.run_all(spark, cfg, run_id="denied")
@@ -221,18 +263,20 @@ def test_unauthorised_user_cannot_run_pipeline_and_is_audited(spark, gov):
 
 def test_operator_runs_but_cannot_administer(spark, gov):
     from dpo import governance
+
     op = _as(gov, [OPS], user="sp-dpo")
     assert governance.is_authorized(spark, op)[0]
-    assert not governance.is_authorized(spark, _as(gov, [ANA]))[0]          # analysts read, never run
+    assert not governance.is_authorized(spark, _as(gov, [ANA]))[0]  # analysts read, never run
     with pytest.raises(PermissionError):
-        governance.admin_apply(spark, op, run_id="op-admin")                  # operators cannot change grants
+        governance.admin_apply(spark, op, run_id="op-admin")  # operators cannot change grants
     assert governance.is_authorized(spark, _as(gov, [ADMINS]), roles=("admins",))[0]
 
 
 def test_enforced_pipeline_never_redefines_reporting_views(spark, gov):
     """An operator run verifies the admin-owned views; it must not CREATE OR REPLACE them."""
     from dpo import pipeline
-    _views(spark, _as(gov, ["finance-cost-owners"]))        # admin-defined, filtered views
+
+    _views(spark, _as(gov, ["finance-cost-owners"]))  # admin-defined, filtered views
     before = spark.table("gov_reporting.recommendations").count()
     pipeline.run_all(spark, _as(gov, [OPS], user="sp-dpo"), run_id="op-run")
     log = spark.table("gov_ops.governance_log").collect()
@@ -246,15 +290,18 @@ def test_successful_run_is_audited(spark, gov):
 
 
 def test_raw_sql_never_persisted(spark, gov):
-    texts = [r.statement_text for r in spark.table("gov_bronze.query_history").select("statement_text").limit(2000).collect()]
+    texts = [
+        r.statement_text for r in spark.table("gov_bronze.query_history").select("statement_text").limit(2000).collect()
+    ]
     assert texts and not any("'" in t or "/*" in t or "--" in t for t in texts)
     assert not any("ignore previous" in t for t in texts)
 
 
 def test_ai_failure_falls_back_to_templates(spark, gov):
     from dpo import pipeline
+
     cfg = copy.deepcopy(gov)
-    cfg.ai_enabled = True                      # ai_query does not exist locally -> must fall back
+    cfg.ai_enabled = True  # ai_query does not exist locally -> must fall back
     ctx = pipeline.run_all(spark, cfg, stages=("narrate",), run_id="ai")
     assert ctx.log[-1]["status"] == "SUCCESS" and "fallback" in ctx.log[-1]["rows_out"]
     n = spark.table("gov_gold.recommendation_narratives")
@@ -264,6 +311,7 @@ def test_ai_failure_falls_back_to_templates(spark, gov):
 # ----------------------------------------------------------------- portability --
 def test_workspace_scoping_contract_and_discount_pricing(spark, gov):
     from dpo import pipeline
+
     base_cost = spark.table("gov_silver.usage_cost").agg(F.sum("cost")).collect()[0][0]
 
     pipeline.run_all(spark, local_cfg(prefix="gov_", workspace_ids=["999"]), stages=("bronze",), run_id="scope")
@@ -286,6 +334,7 @@ def test_pipeline_refuses_real_telemetry_with_governance_off(spark, gov):
     """An operator re-running the job with profile=free_edition, source_mode=system must not copy real
     system tables into an ungoverned schema. Checked on every run, not only at install."""
     from dpo import pipeline
+
     cfg = local_cfg(prefix="gov_", source_mode="system")
     with pytest.raises(PermissionError, match="governance.enforce = false"):
         pipeline.run_all(spark, cfg, stages=("bronze",), run_id="guard-sys")
@@ -295,6 +344,7 @@ def test_pipeline_refuses_real_telemetry_with_governance_off(spark, gov):
 
 def test_pipeline_refuses_profile_bound_to_another_workspace(spark, gov):
     from dpo import pipeline
+
     cfg = local_cfg(prefix="gov_", workspace_hosts=["adb-111.11.azuredatabricks.net"])
     spark.conf.set("spark.databricks.workspaceUrl", "adb-222.22.azuredatabricks.net")
     try:
@@ -308,6 +358,7 @@ def test_pipeline_refuses_profile_bound_to_another_workspace(spark, gov):
 
 def test_config_rejects_unsafe_runtime_values():
     from dpo.config import DPOConfig
+
     for bad in ({"lookback_days": 5000}, {"end_date": "2026-10-27' OR 1=1"}, {"end_date": "27/10/2026"}):
         with pytest.raises(ValueError):
             DPOConfig(catalog=None, **bad).validate()
@@ -318,21 +369,21 @@ def test_enforced_run_cannot_be_redirected_to_another_catalog():
     from dpo.config import DPOConfig
     from dpo.governance import runtime_guard
 
-    class NoConf:
-        class conf:
-            @staticmethod
-            def get(*a):
-                raise RuntimeError("local")
-    assert runtime_guard(NoConf, DPOConfig.from_profile("enterprise_prod"))[0]
+    def unavailable(*_):
+        raise RuntimeError("local")
+
+    no_conf = SimpleNamespace(conf=SimpleNamespace(get=unavailable))  # spark.conf outside Databricks
+    assert runtime_guard(no_conf, DPOConfig.from_profile("enterprise_prod"))[0]
     moved = DPOConfig.from_profile("enterprise_prod", {"catalog": "main"})
-    ok, why = runtime_guard(NoConf, moved)
+    ok, why = runtime_guard(no_conf, moved)
     assert not ok and "allowed_catalogs" in why
     moved.governance["allowed_catalogs"] = ["main"]
-    assert runtime_guard(NoConf, moved)[0]
+    assert runtime_guard(no_conf, moved)[0]
 
 
 def test_profile_name_cannot_be_a_path():
     from dpo.config import DPOConfig
+
     for bad in ("../../etc/x", "enterprise_prod/../free_edition", "Prod Profile"):
         with pytest.raises(ValueError, match="illegal profile name"):
             DPOConfig.from_profile(bad)

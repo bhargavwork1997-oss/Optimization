@@ -19,13 +19,21 @@ access map, so a compromised or careless operator cannot widen what viewers see.
 
 Everything is generated as SQL first: reviewable (dry run) and unit-testable without a workspace.
 """
+
 from __future__ import annotations
 
+import contextlib
 import getpass
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING
 
 from .config import DATA_LAYERS, LAYERS, SYSTEM_SOURCES, DPOConfig
+
+if TYPE_CHECKING:  # annotations only: no runtime import (optional SDK, no import cycles)
+    from pyspark.sql import SparkSession
+
+    from .pipeline import Ctx
+
 
 SHARED_CATALOGS = {"workspace", "main", "hive_metastore", "system", "samples"}
 
@@ -41,19 +49,31 @@ REPORTING_VIEWS = {
     "budget_outlook": ("gold", "budget_outlook", [], []),
     "cost_forecast": ("gold", "cost_forecast", [], []),
 }
-ANALYST_OPS_TABLES = ("run_log", "dq_report", "source_status", "rule_status", "test_results",
-                      "perf_results", "governance_log", "governance_drift")
+ANALYST_OPS_TABLES = (
+    "run_log",
+    "dq_report",
+    "source_status",
+    "rule_status",
+    "test_results",
+    "perf_results",
+    "governance_log",
+    "governance_drift",
+)
 SYSTEM_SCHEMAS = ("billing", "lakeflow", "query", "compute", "access")
-AUDIT_COLUMNS = ("principal STRING, profile STRING, source_mode STRING, action STRING, status STRING, "
-                 "detail STRING, run_id STRING, logged_at TIMESTAMP")
+AUDIT_COLUMNS = (
+    "principal STRING, profile STRING, source_mode STRING, action STRING, status STRING, "
+    "detail STRING, run_id STRING, logged_at TIMESTAMP"
+)
 
 
 @dataclass
 class Stmt:
+    """One governance SQL statement with the reason it exists (shown in plans and the governance log)."""
+
     section: str
     purpose: str
     sql: str
-    requires_table: Optional[str] = None
+    requires_table: str | None = None
 
 
 # --------------------------------------------------------------- expressions --
@@ -91,10 +111,12 @@ def row_visibility_expr(cfg: DPOConfig, cc_col: str = "cost_center") -> str:
     cc = f"coalesce({cc_col}, '(untagged)')"
     parts = [privileged_expr(cfg)]
     for grp, centres in sorted(cfg.governance["cost_center_groups"].items()):
-        vals = ", ".join(f"'{c}'" for c in centres)          # validated by DPOConfig.validate
+        vals = ", ".join(f"'{c}'" for c in centres)  # validated by DPOConfig.validate
         parts.append(f"({member(cfg, grp)} AND {cc} IN ({vals}))")
-    parts.append(f"EXISTS (SELECT 1 FROM {cfg.t('security', 'access_map')} m "
-                 f"WHERE lower(m.principal) = lower({current_user_expr(cfg)}) AND m.cost_center = {cc})")
+    parts.append(
+        f"EXISTS (SELECT 1 FROM {cfg.t('security', 'access_map')} m "
+        f"WHERE lower(m.principal) = lower({current_user_expr(cfg)}) AND m.cost_center = {cc})"
+    )
     return "(" + "\n   OR ".join(parts) + ")"
 
 
@@ -102,10 +124,11 @@ def identity_expr(cfg: DPOConfig, col: str) -> str:
     """SQL expression: real identity for privileged readers, salted SHA-256 pseudonym for viewers."""
     if not (cfg.governance["enforce"] and cfg.governance["mask_identities_for_viewers"]):
         return f"`{col}`"
-    salt = (f"(SELECT max(setting_value) FROM {cfg.t('security', 'settings')} "
-            f"WHERE setting_key = 'identity_salt')")
-    return (f"CASE WHEN {privileged_expr(cfg)} THEN `{col}` WHEN `{col}` IS NULL THEN NULL "
-            f"ELSE concat('user-', substr(sha2(concat({salt}, lower(`{col}`)), 256), 1, 12)) END")
+    salt = f"(SELECT max(setting_value) FROM {cfg.t('security', 'settings')} WHERE setting_key = 'identity_salt')"
+    return (
+        f"CASE WHEN {privileged_expr(cfg)} THEN `{col}` WHEN `{col}` IS NULL THEN NULL "
+        f"ELSE concat('user-', substr(sha2(concat({salt}, lower(`{col}`)), 256), 1, 12)) END"
+    )
 
 
 def masked_expr(cfg: DPOConfig, col: str) -> str:
@@ -133,24 +156,43 @@ def plan_security(cfg: DPOConfig) -> list[Stmt]:
     sec = cfg.schema("security")
     out = [
         Stmt("security", "admin-only schema", f"CREATE SCHEMA IF NOT EXISTS {sec}"),
-        Stmt("security", "row-level access map (admins maintain)",
-             f"CREATE TABLE IF NOT EXISTS {cfg.t('security', 'access_map')} "
-             f"(principal STRING, cost_center STRING, granted_by STRING, granted_at TIMESTAMP) USING {fmt}"),
-        Stmt("security", "secret salt for identity hashing",
-             f"CREATE TABLE IF NOT EXISTS {cfg.t('security', 'settings')} "
-             f"(setting_key STRING, setting_value STRING) USING {fmt}"),
-        Stmt("security", "generate salt once",
-             f"INSERT INTO {cfg.t('security', 'settings')} SELECT 'identity_salt', "
-             f"concat(uuid(), uuid()) WHERE NOT EXISTS (SELECT 1 FROM {cfg.t('security', 'settings')} "
-             f"WHERE setting_key = 'identity_salt')"),
+        Stmt(
+            "security",
+            "row-level access map (admins maintain)",
+            f"CREATE TABLE IF NOT EXISTS {cfg.t('security', 'access_map')} "
+            f"(principal STRING, cost_center STRING, granted_by STRING, granted_at TIMESTAMP) USING {fmt}",
+        ),
+        Stmt(
+            "security",
+            "secret salt for identity hashing",
+            f"CREATE TABLE IF NOT EXISTS {cfg.t('security', 'settings')} "
+            f"(setting_key STRING, setting_value STRING) USING {fmt}",
+        ),
+        Stmt(
+            "security",
+            "generate salt once",
+            f"INSERT INTO {cfg.t('security', 'settings')} SELECT 'identity_salt', "
+            f"concat(uuid(), uuid()) WHERE NOT EXISTS (SELECT 1 FROM {cfg.t('security', 'settings')} "
+            f"WHERE setting_key = 'identity_salt')",
+        ),
     ]
     props = " TBLPROPERTIES ('delta.appendOnly' = 'true')" if fmt == "delta" else ""
-    out.append(Stmt("security", "append-only audit log",
-                    f"CREATE TABLE IF NOT EXISTS {cfg.t('ops', 'audit_log')} ({AUDIT_COLUMNS}) USING {fmt}{props}"))
+    out.append(
+        Stmt(
+            "security",
+            "append-only audit log",
+            f"CREATE TABLE IF NOT EXISTS {cfg.t('ops', 'audit_log')} ({AUDIT_COLUMNS}) USING {fmt}{props}",
+        )
+    )
     if fmt == "delta":
-        out.append(Stmt("security", "enforce append-only on an existing audit log",
-                        f"ALTER TABLE {cfg.t('ops', 'audit_log')} SET TBLPROPERTIES ('delta.appendOnly' = 'true')",
-                        requires_table=cfg.t("ops", "audit_log")))
+        out.append(
+            Stmt(
+                "security",
+                "enforce append-only on an existing audit log",
+                f"ALTER TABLE {cfg.t('ops', 'audit_log')} SET TBLPROPERTIES ('delta.appendOnly' = 'true')",
+                requires_table=cfg.t("ops", "audit_log"),
+            )
+        )
     return out
 
 
@@ -167,59 +209,114 @@ def plan_grants(cfg: DPOConfig) -> list[Stmt]:
         for layer in LAYERS:
             out.append(Stmt("ownership", f"admins own {layer}", f"ALTER SCHEMA {cfg.schema(layer)} OWNER TO {admins}"))
         audit = cfg.t("ops", "audit_log")
-        out.append(Stmt("ownership", "operators can append, never alter or purge the audit log",
-                        f"ALTER TABLE {audit} OWNER TO {admins}", requires_table=audit))
+        out.append(
+            Stmt(
+                "ownership",
+                "operators can append, never alter or purge the audit log",
+                f"ALTER TABLE {audit} OWNER TO {admins}",
+                requires_table=audit,
+            )
+        )
         for v in REPORTING_VIEWS:
             fq = cfg.t("reporting", v)
-            out.append(Stmt("ownership", "admins own reporting views", f"ALTER VIEW {fq} OWNER TO {admins}",
-                            requires_table=fq))
+            out.append(
+                Stmt("ownership", "admins own reporting views", f"ALTER VIEW {fq} OWNER TO {admins}", requires_table=fq)
+            )
 
     if cfg.catalog:
         for who in (admins, ops, ana, view):
             out.append(Stmt("access", "browse the catalog", f"GRANT USE CATALOG ON CATALOG {cfg.catalog} TO {who}"))
 
     if cfg.catalog and g.get("operators_can_create_schemas"):
-        out.append(Stmt("access", "operators: create test schemas (dev only)",
-                        f"GRANT CREATE SCHEMA ON CATALOG {cfg.catalog} TO {ops}"))
+        out.append(
+            Stmt(
+                "access",
+                "operators: create test schemas (dev only)",
+                f"GRANT CREATE SCHEMA ON CATALOG {cfg.catalog} TO {ops}",
+            )
+        )
     for layer in LAYERS:
-        out.append(Stmt("access", "admins: full control", f"GRANT ALL PRIVILEGES ON SCHEMA {cfg.schema(layer)} TO {admins}"))
+        out.append(
+            Stmt("access", "admins: full control", f"GRANT ALL PRIVILEGES ON SCHEMA {cfg.schema(layer)} TO {admins}")
+        )
     for layer in DATA_LAYERS:
-        out.append(Stmt("access", "operators: write data layers",
-                        f"GRANT USE SCHEMA, SELECT, MODIFY, CREATE TABLE ON SCHEMA {cfg.schema(layer)} TO {ops}"))
+        out.append(
+            Stmt(
+                "access",
+                "operators: write data layers",
+                f"GRANT USE SCHEMA, SELECT, MODIFY, CREATE TABLE ON SCHEMA {cfg.schema(layer)} TO {ops}",
+            )
+        )
     # reporting is read-only for operators: they cannot create a view that viewers would inherit
-    out.append(Stmt("access", "operators: read reporting (no create)",
-                    f"GRANT USE SCHEMA, SELECT ON SCHEMA {cfg.schema('reporting')} TO {ops}"))
+    out.append(
+        Stmt(
+            "access",
+            "operators: read reporting (no create)",
+            f"GRANT USE SCHEMA, SELECT ON SCHEMA {cfg.schema('reporting')} TO {ops}",
+        )
+    )
     for layer in ("silver", "gold", "reporting"):
-        out.append(Stmt("access", "analysts: read curated layers",
-                        f"GRANT USE SCHEMA, SELECT ON SCHEMA {cfg.schema(layer)} TO {ana}"))
+        out.append(
+            Stmt(
+                "access",
+                "analysts: read curated layers",
+                f"GRANT USE SCHEMA, SELECT ON SCHEMA {cfg.schema(layer)} TO {ana}",
+            )
+        )
     out.append(Stmt("access", "analysts: browse ops", f"GRANT USE SCHEMA ON SCHEMA {cfg.schema('ops')} TO {ana}"))
     for t in ANALYST_OPS_TABLES:
         fq = cfg.t("ops", t)
-        out.append(Stmt("access", "analysts: pipeline health only",
-                        f"GRANT SELECT ON TABLE {fq} TO {ana}", requires_table=fq))
-    out.append(Stmt("access", "viewers: reporting views only",
-                    f"GRANT USE SCHEMA, SELECT ON SCHEMA {cfg.schema('reporting')} TO {view}"))
+        out.append(
+            Stmt("access", "analysts: pipeline health only", f"GRANT SELECT ON TABLE {fq} TO {ana}", requires_table=fq)
+        )
+    out.append(
+        Stmt(
+            "access",
+            "viewers: reporting views only",
+            f"GRANT USE SCHEMA, SELECT ON SCHEMA {cfg.schema('reporting')} TO {view}",
+        )
+    )
 
     if g["grant_system_access"]:
         out.append(Stmt("system", "operators read system tables", f"GRANT USE CATALOG ON CATALOG system TO {ops}"))
         for sch in SYSTEM_SCHEMAS:
             who = admins if sch == "access" else ops
-            out.append(Stmt("system", "read system tables",
-                            f"GRANT USE SCHEMA, SELECT ON SCHEMA system.{sch} TO {who}"))
+            out.append(
+                Stmt("system", "read system tables", f"GRANT USE SCHEMA, SELECT ON SCHEMA system.{sch} TO {who}")
+            )
 
     cls = g["classification"]
     for layer in LAYERS:
         s = cfg.schema(layer)
         extra = ", 'contains' = 'sql_text'" if layer == "bronze" else ""
-        out.append(Stmt("tags", "classification tags",
-                        f"ALTER SCHEMA {s} SET TAGS ('data_classification' = '{cls}', "
-                        f"'managed_by' = 'dpo-accelerator', 'dpo_layer' = '{layer}'{extra})"))
-        out.append(Stmt("tags", "schema comment",
-                        f"COMMENT ON SCHEMA {s} IS 'DPO {layer} layer. Group access only; see GOVERNANCE.md'"))
+        out.append(
+            Stmt(
+                "tags",
+                "classification tags",
+                f"ALTER SCHEMA {s} SET TAGS ('data_classification' = '{cls}', "
+                f"'managed_by' = 'dpo-accelerator', 'dpo_layer' = '{layer}'{extra})",
+            )
+        )
+        out.append(
+            Stmt(
+                "tags",
+                "schema comment",
+                f"COMMENT ON SCHEMA {s} IS 'DPO {layer} layer. Group access only; see GOVERNANCE.md'",
+            )
+        )
     return out
 
 
-def build_views(spark, cfg: DPOConfig) -> list[Stmt]:
+def _view_column(cfg: DPOConfig, col: str, ident: list, masked: list) -> str:
+    """One select-list entry of a secured view: hashed identity, masked value, or the column itself."""
+    if col in ident:
+        return f"{identity_expr(cfg, col)} AS `{col}`"
+    if col in masked:
+        return f"{masked_expr(cfg, col)} AS `{col}`"
+    return f"`{col}`"
+
+
+def build_views(spark: SparkSession, cfg: DPOConfig) -> list[Stmt]:
     """Dynamic views: run with the owner's rights, filter rows and mask columns per reader."""
     out = []
     for view, (layer, table, ident, masked) in REPORTING_VIEWS.items():
@@ -229,17 +326,16 @@ def build_views(spark, cfg: DPOConfig) -> list[Stmt]:
         except Exception:
             continue
 
-        def col_sql(c):
-            if c in ident:
-                return f"{identity_expr(cfg, c)} AS `{c}`"
-            if c in masked:
-                return f"{masked_expr(cfg, c)} AS `{c}`"
-            return f"`{c}`"
-        sel = ",\n  ".join(col_sql(c) for c in cols)
+        sel = ",\n  ".join(_view_column(cfg, c, ident, masked) for c in cols)
         where = row_visibility_expr(cfg, "src.cost_center" if "cost_center" in cols else "CAST(NULL AS STRING)")
-        out.append(Stmt("views", f"secured view over {table}",
-                        f"CREATE OR REPLACE VIEW {cfg.t('reporting', view)} AS\nSELECT\n  {sel}\n"
-                        f"FROM {src} AS src\nWHERE {where}"))
+        out.append(
+            Stmt(
+                "views",
+                f"secured view over {table}",
+                f"CREATE OR REPLACE VIEW {cfg.t('reporting', view)} AS\nSELECT\n  {sel}\n"
+                f"FROM {src} AS src\nWHERE {where}",
+            )
+        )
     return out
 
 
@@ -252,7 +348,9 @@ def _exists(spark, fq: str) -> bool:
         return False
 
 
-def apply(spark, cfg: DPOConfig, stmts: list[Stmt], run_id: str = "", dry_run: bool = False) -> list[tuple]:
+def apply(
+    spark: SparkSession, cfg: DPOConfig, stmts: list[Stmt], run_id: str = "", dry_run: bool = False
+) -> list[tuple]:
     """Run statements (or list them with dry_run), log each result to ops.governance_log, and fail on errors
     when the profile says so.
     """
@@ -269,8 +367,14 @@ def apply(spark, cfg: DPOConfig, stmts: list[Stmt], run_id: str = "", dry_run: b
             rows.append((s.section, s.purpose, s.sql, "OK", ""))
         except Exception as exc:
             rows.append((s.section, s.purpose, s.sql, "ERROR", str(exc).split("\n")[0][:500]))
-    _write(spark, cfg, "governance_log", rows,
-           "section string, purpose string, statement string, status string, error string", run_id)
+    _write(
+        spark,
+        cfg,
+        "governance_log",
+        rows,
+        "section string, purpose string, statement string, status string, error string",
+        run_id,
+    )
     errors = [r for r in rows if r[3] == "ERROR"]
     if errors and cfg.governance["fail_on_error"] and not dry_run:
         raise RuntimeError(f"{len(errors)} governance statements failed; first: {errors[0][2]} -> {errors[0][4]}")
@@ -279,6 +383,7 @@ def apply(spark, cfg: DPOConfig, stmts: list[Stmt], run_id: str = "", dry_run: b
 
 def _write(spark, cfg, table, rows, schema, run_id, mode="overwrite"):
     from pyspark.sql import functions as F
+
     empty = not rows
     if empty:
         rows = [tuple([None] * len(schema.split(",")))]
@@ -294,7 +399,7 @@ def _write(spark, cfg, table, rows, schema, run_id, mode="overwrite"):
 
 
 # ----------------------------------------------------------------- identity ---
-def current_user(spark, cfg: DPOConfig) -> str:
+def current_user(spark: SparkSession, cfg: DPOConfig) -> str:
     """The identity running this session."""
     if cfg.governance.get("simulate_user"):
         return cfg.governance["simulate_user"]
@@ -312,7 +417,7 @@ def _is_member_of(spark, cfg: DPOConfig, roles: tuple) -> tuple[bool, str]:
         return False, f"membership check failed ({type(exc).__name__})"
 
 
-def is_authorized(spark, cfg: DPOConfig, roles: tuple = ("admins", "operators")) -> tuple[bool, str]:
+def is_authorized(spark: SparkSession, cfg: DPOConfig, roles: tuple = ("admins", "operators")) -> tuple[bool, str]:
     """Defence in depth: Unity Catalog grants are the real boundary; this stops runs early and audits them."""
     g = cfg.governance
     user = current_user(spark, cfg)
@@ -324,19 +429,20 @@ def is_authorized(spark, cfg: DPOConfig, roles: tuple = ("admins", "operators"))
     groups = " or ".join(cfg.group(r) for r in roles)
     if ok:
         return True, f"{user}: member of {groups}"
-    return False, err or (f"{user} is not a member of {groups}. Ask a DPO admin to add you, "
-                          f"or run as the DPO service principal.")
+    return False, err or (
+        f"{user} is not a member of {groups}. Ask a DPO admin to add you, or run as the DPO service principal."
+    )
 
 
-def workspace_host(spark) -> Optional[str]:
+def workspace_host(spark: SparkSession) -> str | None:
     """This workspace's host on Databricks; None locally."""
     try:
         return spark.conf.get("spark.databricks.workspaceUrl", None)
-    except Exception:   # noqa: BLE001 - not available outside Databricks
+    except Exception:  # noqa: BLE001 - not available outside Databricks
         return None
 
 
-def runtime_guard(spark, cfg: DPOConfig) -> tuple[bool, str]:
+def runtime_guard(spark: SparkSession, cfg: DPOConfig) -> tuple[bool, str]:
     """Checks that must hold on EVERY run, not only at install time.
 
     The pipeline job lets operators "run now" with other parameters (profile, source_mode, catalog).
@@ -344,24 +450,35 @@ def runtime_guard(spark, cfg: DPOConfig) -> tuple[bool, str]:
     workspace would copy real system-table data into an ungoverned schema readable by anyone.
     """
     if cfg.source_mode == "system" and not cfg.governance["enforce"]:
-        return False, (f"profile '{cfg.profile}' has governance.enforce = false: refusing to read real system "
-                       "tables into an ungoverned schema. Use an enterprise profile.")
+        return False, (
+            f"profile '{cfg.profile}' has governance.enforce = false: refusing to read real system "
+            "tables into an ungoverned schema. Use an enterprise profile."
+        )
     g = cfg.governance
-    if (g["enforce"] and cfg.profile_catalog and cfg.catalog != cfg.profile_catalog
-            and cfg.catalog not in g.get("allowed_catalogs", [])):
+    if (
+        g["enforce"]
+        and cfg.profile_catalog
+        and cfg.catalog != cfg.profile_catalog
+        and cfg.catalog not in g.get("allowed_catalogs", [])
+    ):
         # e.g. "run now" with catalog=<a catalog every user can read>: results would leave the governed catalog
-        return False, (f"catalog '{cfg.catalog}' is not the profile's catalog '{cfg.profile_catalog}'. Add it to "
-                       "governance.allowed_catalogs in the profile if this redirect is intended.")
+        return False, (
+            f"catalog '{cfg.catalog}' is not the profile's catalog '{cfg.profile_catalog}'. Add it to "
+            "governance.allowed_catalogs in the profile if this redirect is intended."
+        )
     from .config import normalize_host
+
     host = normalize_host(workspace_host(spark))
-    allowed = [normalize_host(h) for h in cfg.workspace_hosts]
+    allowed = [x for x in (normalize_host(h) for h in cfg.workspace_hosts) if x]
     if host and allowed and host not in allowed:
-        return False, (f"profile '{cfg.profile}' is bound to {', '.join(allowed)} but this workspace is {host}. "
-                       "Use the profile for this workspace, or add the host to workspace_hosts.")
+        return False, (
+            f"profile '{cfg.profile}' is bound to {', '.join(allowed)} but this workspace is {host}. "
+            "Use the profile for this workspace, or add the host to workspace_hosts."
+        )
     return True, "runtime guard passed"
 
 
-def authorize(spark, cfg: DPOConfig, run_id: str = "", roles: tuple = ("admins", "operators")) -> str:
+def authorize(spark: SparkSession, cfg: DPOConfig, run_id: str = "", roles: tuple = ("admins", "operators")) -> str:
     """Raise PermissionError unless the caller may run DPO here; every decision is audited."""
     ok, reason = runtime_guard(spark, cfg)
     if ok:
@@ -372,18 +489,25 @@ def authorize(spark, cfg: DPOConfig, run_id: str = "", roles: tuple = ("admins",
     return reason
 
 
-def record_audit(spark, cfg: DPOConfig, run_id: str, action: str, status: str, detail: str) -> None:
+def record_audit(spark: SparkSession, cfg: DPOConfig, run_id: str, action: str, status: str, detail: str) -> None:
     """Append one row to the append-only audit log. Never raises: auditing must not break a run."""
     try:
         row = [(current_user(spark, cfg), cfg.profile, cfg.source_mode, action, status, detail[:2000])]
-        _write(spark, cfg, "audit_log", row, "principal string, profile string, source_mode string, "
-               "action string, status string, detail string", run_id, mode="append")
+        _write(
+            spark,
+            cfg,
+            "audit_log",
+            row,
+            "principal string, profile string, source_mode string, action string, status string, detail string",
+            run_id,
+            mode="append",
+        )
     except Exception:
         pass  # a denied caller usually cannot write either; system.access.audit still records the attempt
 
 
 # --------------------------------------------------------------------- drift --
-def audit_drift(spark, cfg: DPOConfig, run_id: str = "", revoke: bool = False) -> list[tuple]:
+def audit_drift(spark: SparkSession, cfg: DPOConfig, run_id: str = "", revoke: bool = False) -> list[tuple]:
     """Principals holding grants on DPO schemas outside the role model."""
     g = cfg.governance
     expected = {p.lower() for p in list(g["groups"].values()) + list(g["authorized_principals"])}
@@ -409,13 +533,19 @@ def audit_drift(spark, cfg: DPOConfig, run_id: str = "", revoke: bool = False) -
                 except Exception as exc:
                     status = f"REVOKE_FAILED: {str(exc).split(chr(10))[0][:200]}"
             rows.append((s, principal, action, status, ""))
-    _write(spark, cfg, "governance_drift", rows,
-           "schema_name string, principal string, privilege string, status string, error string", run_id)
+    _write(
+        spark,
+        cfg,
+        "governance_drift",
+        rows,
+        "schema_name string, principal string, privilege string, status string, error string",
+        run_id,
+    )
     return rows
 
 
 # ----------------------------------------------------------------- admin path --
-def plan_table_ownership(spark, cfg: DPOConfig) -> list[Stmt]:
+def plan_table_ownership(spark: SparkSession, cfg: DPOConfig) -> list[Stmt]:
     """Data-layer tables owned by the operators group, so whichever operator identity runs next
     (a person during install, the service principal afterwards) can rewrite them. Operators still
     cannot grant viewers anything useful: viewers have no USE SCHEMA on data layers."""
@@ -423,19 +553,23 @@ def plan_table_ownership(spark, cfg: DPOConfig) -> list[Stmt]:
     ops = _p(cfg.group("operators"))
     for layer in DATA_LAYERS:
         try:
-            tables = [r.tableName for r in spark.sql(f"SHOW TABLES IN {cfg.schema(layer)}").collect()
-                      if not getattr(r, "isTemporary", False)]
+            tables = [
+                r.tableName
+                for r in spark.sql(f"SHOW TABLES IN {cfg.schema(layer)}").collect()
+                if not getattr(r, "isTemporary", False)
+            ]
         except Exception:
             continue
         for tb in sorted(tables):
             if layer == "ops" and tb == "audit_log":
-                continue                                   # stays admin-owned and append-only
-            out.append(Stmt("ownership", "operators own data-layer tables",
-                            f"ALTER TABLE {cfg.t(layer, tb)} OWNER TO {ops}"))
+                continue  # stays admin-owned and append-only
+            out.append(
+                Stmt("ownership", "operators own data-layer tables", f"ALTER TABLE {cfg.t(layer, tb)} OWNER TO {ops}")
+            )
     return out
 
 
-def admin_plan(spark, cfg: DPOConfig) -> list[Stmt]:
+def admin_plan(spark: SparkSession, cfg: DPOConfig) -> list[Stmt]:
     """Everything an admin applies: security objects, grants, ownership, tags and reporting views."""
     stmts = plan_setup(cfg) + plan_security(cfg)
     if cfg.governance["apply_grants"] and cfg.catalog:
@@ -445,23 +579,29 @@ def admin_plan(spark, cfg: DPOConfig) -> list[Stmt]:
         if cfg.governance["manage_ownership"]:
             own += plan_table_ownership(spark, cfg)
         rest = [s for s in grants if s.section != "ownership"]
-        return stmts + views + own + rest            # views exist before they are re-owned
+        return stmts + views + own + rest  # views exist before they are re-owned
     return stmts + build_views(spark, cfg)
 
 
-def admin_apply(spark, cfg: DPOConfig, run_id: str = "admin", dry_run: bool = False) -> dict:
+def admin_apply(spark: SparkSession, cfg: DPOConfig, run_id: str = "admin", dry_run: bool = False) -> dict:
     """Run by a dpo-admins member (00_setup) or the admin service principal (governance job)."""
     authorize(spark, cfg, run_id, roles=("admins",))
     rows = apply(spark, cfg, admin_plan(spark, cfg), run_id, dry_run)
     drift = []
     if not dry_run and cfg.governance["apply_grants"] and cfg.catalog:
         drift = audit_drift(spark, cfg, run_id, revoke=cfg.governance["revoke_drift"])
-    record_audit(spark, cfg, run_id, "admin_apply", "DRY_RUN" if dry_run else "APPLIED",
-                 f"{len(rows)} statements, {sum(r[3] == 'ERROR' for r in rows)} errors")
+    record_audit(
+        spark,
+        cfg,
+        run_id,
+        "admin_apply",
+        "DRY_RUN" if dry_run else "APPLIED",
+        f"{len(rows)} statements, {sum(r[3] == 'ERROR' for r in rows)} errors",
+    )
     return {"rows": rows, "drift": drift}
 
 
-def run_govern(ctx) -> dict:
+def run_govern(ctx: Ctx) -> dict:
     """Pipeline stage. Free Edition (not enforced): build views. Enforced: verify only, never change."""
     spark, cfg = ctx.spark, ctx.cfg
     if not cfg.governance["enforce"]:
@@ -471,18 +611,34 @@ def run_govern(ctx) -> dict:
     checks = []
     for v in REPORTING_VIEWS:
         fq = cfg.t("reporting", v)
-        checks.append(("verify", f"reporting view {v}", fq, "OK" if _exists(spark, fq) else "MISSING",
-                       "" if _exists(spark, fq) else "an admin must run 00_setup with apply"))
-    _write(spark, cfg, "governance_log", checks,
-           "section string, purpose string, statement string, status string, error string", ctx.run_id)
+        checks.append(
+            (
+                "verify",
+                f"reporting view {v}",
+                fq,
+                "OK" if _exists(spark, fq) else "MISSING",
+                "" if _exists(spark, fq) else "an admin must run 00_setup with apply",
+            )
+        )
+    _write(
+        spark,
+        cfg,
+        "governance_log",
+        checks,
+        "section string, purpose string, statement string, status string, error string",
+        ctx.run_id,
+    )
     drift = audit_drift(spark, cfg, ctx.run_id, revoke=False) if cfg.catalog else []
     purge_logs(spark, cfg)
-    return {"views_missing": sum(c[3] == "MISSING" for c in checks),
-            "drift": sum(1 for d in drift if d[3] == "DRIFT"), "mode": "verified"}
+    return {
+        "views_missing": sum(c[3] == "MISSING" for c in checks),
+        "drift": sum(1 for d in drift if d[3] == "DRIFT"),
+        "mode": "verified",
+    }
 
 
 # ----------------------------------------------------------------- preflight --
-def preflight(spark, cfg: DPOConfig) -> list[tuple]:
+def preflight(spark: SparkSession, cfg: DPOConfig) -> list[tuple]:
     """(check, status, detail, fix) — run before the first deployment in a workspace."""
     res = []
     user = current_user(spark, cfg)
@@ -492,12 +648,14 @@ def preflight(spark, cfg: DPOConfig) -> list[tuple]:
             spark.sql(f"DESCRIBE CATALOG {cfg.catalog}").collect()
             res.append(("catalog", "OK", f"{cfg.catalog} exists", ""))
         except Exception:
-            fix = (f"CREATE CATALOG {cfg.catalog}" +
-                   (f" MANAGED LOCATION '{cfg.managed_location}'" if cfg.managed_location else
-                    "  -- add MANAGED LOCATION if the metastore has no default storage"))
+            fix = f"CREATE CATALOG {cfg.catalog}" + (
+                f" MANAGED LOCATION '{cfg.managed_location}'"
+                if cfg.managed_location
+                else "  -- add MANAGED LOCATION if the metastore has no default storage"
+            )
             res.append(("catalog", "MISSING", f"{cfg.catalog} not found or not visible", fix))
     if cfg.source_mode == "system":
-        for name, table in SYSTEM_SOURCES.items():
+        for table in SYSTEM_SOURCES.values():
             if not table:
                 continue
             try:
@@ -505,36 +663,72 @@ def preflight(spark, cfg: DPOConfig) -> list[tuple]:
                 res.append((f"source {table}", "OK" if n else "EMPTY", "readable", ""))
             except Exception as exc:
                 sch = table.split(".")[1]
-                res.append((f"source {table}", "DENIED", str(exc).split("\n")[0][:200],
-                            f"GRANT USE SCHEMA, SELECT ON SCHEMA system.{sch} TO `{cfg.group('operators')}`"))
+                res.append(
+                    (
+                        f"source {table}",
+                        "DENIED",
+                        str(exc).split("\n")[0][:200],
+                        f"GRANT USE SCHEMA, SELECT ON SCHEMA system.{sch} TO `{cfg.group('operators')}`",
+                    )
+                )
         if not cfg.workspace_ids:
-            res.append(("workspace scope", "WARN", "workspace_ids empty: all workspaces in the account are analysed",
-                        "Set workspace_ids in the profile to the workspaces this engagement covers"))
+            res.append(
+                (
+                    "workspace scope",
+                    "WARN",
+                    "workspace_ids empty: all workspaces in the account are analysed",
+                    "Set workspace_ids in the profile to the workspaces this engagement covers",
+                )
+            )
     if cfg.governance["enforce"]:
         try:
             names = {r[0].lower() for r in spark.sql("SHOW GROUPS").collect()}
             for role, grp in cfg.governance["groups"].items():
                 ok = grp.lower() in names
-                res.append((f"group {role}", "OK" if ok else "MISSING", grp,
-                            "" if ok else f"Create account group '{grp}' and assign it to this workspace"))
+                res.append(
+                    (
+                        f"group {role}",
+                        "OK" if ok else "MISSING",
+                        grp,
+                        "" if ok else f"Create account group '{grp}' and assign it to this workspace",
+                    )
+                )
         except Exception as exc:
             res.append(("groups", "UNKNOWN", str(exc).split("\n")[0][:200], "Verify groups in the account console"))
         for roles, label in ((("admins",), "admin rights"), (("admins", "operators"), "run rights")):
             ok, reason = is_authorized(spark, cfg, roles)
             res.append((label, "OK" if ok else "NO", reason, ""))
         if cfg.governance["retain_raw_sql"]:
-            res.append(("raw SQL", "WARN", "retain_raw_sql=true keeps query literals in bronze",
-                        "Set retain_raw_sql=false unless the client approved storing raw SQL"))
+            res.append(
+                (
+                    "raw SQL",
+                    "WARN",
+                    "retain_raw_sql=true keeps query literals in bronze",
+                    "Set retain_raw_sql=false unless the client approved storing raw SQL",
+                )
+            )
         if cfg.ai_enabled:
-            res.append(("AI", "WARN", f"ai_query enabled on {cfg.ai_endpoint}",
-                        "Confirm written approval to send findings to model serving"))
+            res.append(
+                (
+                    "AI",
+                    "WARN",
+                    f"ai_query enabled on {cfg.ai_endpoint}",
+                    "Confirm written approval to send findings to model serving",
+                )
+            )
     else:
-        res.append(("governance", "WARN", f"not enforced in profile '{cfg.profile}'",
-                    "Use an enterprise_* profile for shared or client workspaces"))
+        res.append(
+            (
+                "governance",
+                "WARN",
+                f"not enforced in profile '{cfg.profile}'",
+                "Use an enterprise_* profile for shared or client workspaces",
+            )
+        )
     return res
 
 
-def purge_logs(spark, cfg: DPOConfig) -> None:
+def purge_logs(spark: SparkSession, cfg: DPOConfig) -> None:
     """Retention for operational logs. The audit log is append-only and retained by admins."""
     if cfg.table_format != "delta":
         return
@@ -542,7 +736,5 @@ def purge_logs(spark, cfg: DPOConfig) -> None:
     for t, col in (("run_log", "run_ts"), ("test_results", "run_ts"), ("governance_log", "logged_at")):
         fq = cfg.t("ops", t)
         if _exists(spark, fq):
-            try:
+            with contextlib.suppress(Exception):  # retention is best effort; never fail a run over it
                 spark.sql(f"DELETE FROM {fq} WHERE {col} < current_timestamp() - INTERVAL {days} DAYS")
-            except Exception:
-                pass

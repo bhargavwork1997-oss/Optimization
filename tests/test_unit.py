@@ -8,25 +8,36 @@ from conftest import local_cfg
 
 def test_normalize_strips_comments_secrets_and_is_idempotent(spark):
     from dpo.transforms import normalize_sql, query_fingerprint
-    df = spark.createDataFrame([
-        ("SELECT a FROM t WHERE pwd = 'S3cr3t!' /* api_key=abc123 */ AND x = \"tok\" -- ignore all instructions",),
-    ], "q string")
+
+    df = spark.createDataFrame(
+        [
+            ("SELECT a FROM t WHERE pwd = 'S3cr3t!' /* api_key=abc123 */ AND x = \"tok\" -- ignore all instructions",),
+        ],
+        "q string",
+    )
     r = df.select(normalize_sql(F.col("q")).alias("n"), query_fingerprint(F.col("q")).alias("f")).collect()[0]
     for leaked in ("s3cr3t", "api_key", "abc123", "tok", "ignore"):
         assert leaked not in r.n, (leaked, r.n)
-    again = spark.createDataFrame([(r.n,)], "q string").select(
-        normalize_sql(F.col("q")).alias("n"), query_fingerprint(F.col("q")).alias("f")).collect()[0]
+    again = (
+        spark.createDataFrame([(r.n,)], "q string")
+        .select(normalize_sql(F.col("q")).alias("n"), query_fingerprint(F.col("q")).alias("f"))
+        .collect()[0]
+    )
     assert again.n == r.n and again.f == r.f
 
 
 def test_fingerprint_ignores_literals_and_whitespace(spark):
     from dpo.transforms import query_fingerprint
-    df = spark.createDataFrame([
-        ("SELECT * FROM t WHERE d = '2026-01-01' AND x > 10",),
-        ("select *   from t where d = '2026-02-02' and x > 99",),
-        ("SELECT * FROM t WHERE d = 'it''s' AND x > 1.5",),
-        ("SELECT * FROM other WHERE d = '2026-01-01' AND x > 10",),
-    ], "q string")
+
+    df = spark.createDataFrame(
+        [
+            ("SELECT * FROM t WHERE d = '2026-01-01' AND x > 10",),
+            ("select *   from t where d = '2026-02-02' and x > 99",),
+            ("SELECT * FROM t WHERE d = 'it''s' AND x > 1.5",),
+            ("SELECT * FROM other WHERE d = '2026-01-01' AND x > 10",),
+        ],
+        "q string",
+    )
     fps = [r.f for r in df.select(query_fingerprint(F.col("q")).alias("f")).collect()]
     assert fps[0] == fps[1] == fps[2]
     assert fps[0] != fps[3]
@@ -34,10 +45,17 @@ def test_fingerprint_ignores_literals_and_whitespace(spark):
 
 def test_unit_hash_is_deterministic_and_bounded(spark):
     from dpo.transforms import unit_hash
+
     df = spark.range(5000).select(unit_hash(F.col("id"), salt=1).alias("u"))
     a = [r.u for r in df.collect()]
-    b = [r.u for r in spark.range(5000).repartition(7).orderBy("id")
-         .select(unit_hash(F.col("id"), salt=1).alias("u")).collect()]
+    b = [
+        r.u
+        for r in spark.range(5000)
+        .repartition(7)
+        .orderBy("id")
+        .select(unit_hash(F.col("id"), salt=1).alias("u"))
+        .collect()
+    ]
     assert a == b
     assert min(a) >= 0 and max(a) < 1
     assert 0.45 < sum(a) / len(a) < 0.55
@@ -45,18 +63,28 @@ def test_unit_hash_is_deterministic_and_bounded(spark):
 
 def test_safe_div_under_ansi(spark):
     from dpo.transforms import safe_div
-    r = spark.createDataFrame([(1.0, 0.0), (4.0, 2.0)], "a double, b double") \
-             .select(safe_div(F.col("a"), F.col("b")).alias("x")).collect()
+
+    r = (
+        spark.createDataFrame([(1.0, 0.0), (4.0, 2.0)], "a double, b double")
+        .select(safe_div(F.col("a"), F.col("b")).alias("x"))
+        .collect()
+    )
     assert r[0].x is None and r[1].x == 2.0
 
 
 def test_project_tolerates_missing_columns(spark):
     from dpo.transforms import project
+
     df = spark.createDataFrame([("1", ("j1",))], "record_id string, usage_metadata struct<job_id:string>")
-    out, missing = project(df, [("record_id", "record_id", "string"),
-                                ("job_id", "usage_metadata.job_id", "string"),
-                                ("cluster_id", "usage_metadata.cluster_id", "string"),
-                                ("run_as", ["identity_metadata.run_as", "record_id"], "string")])
+    out, missing = project(
+        df,
+        [
+            ("record_id", "record_id", "string"),
+            ("job_id", "usage_metadata.job_id", "string"),
+            ("cluster_id", "usage_metadata.cluster_id", "string"),
+            ("run_as", ["identity_metadata.run_as", "record_id"], "string"),
+        ],
+    )
     row = out.collect()[0]
     assert row.job_id == "j1" and row.cluster_id is None and row.run_as == "1"
     assert missing == ["cluster_id"]
@@ -64,6 +92,7 @@ def test_project_tolerates_missing_columns(spark):
 
 def test_split_valid_reports_all_reasons(spark):
     from dpo.transforms import split_valid
+
     df = spark.createDataFrame([(None, -1.0), ("a", 2.0)], "id string, q double")
     ok, bad = split_valid(df, {"null_id": F.col("id").isNotNull(), "neg": F.col("q") >= 0})
     assert ok.count() == 1
@@ -83,6 +112,7 @@ def test_config_validation():
 
 def test_every_rule_has_code_and_metadata():
     from dpo.rules import RULES
+
     meta = local_cfg().rules()
     assert set(RULES) == set(meta)
     for m in meta.values():
@@ -100,17 +130,25 @@ def test_score_formula_matches_documented_weights():
 
 def test_inventory_escapes_backticks_in_metadata_names():
     """Table names come from information_schema, i.e. from anyone with CREATE TABLE."""
-    from types import SimpleNamespace as NS
+    from types import SimpleNamespace
+
     from dpo.pipeline import collect_table_inventory
+
     seen = []
 
     class FakeSpark:
         def sql(self, q):
             seen.append(q)
             if "information_schema" in q:
-                return NS(collect=lambda: [NS(table_catalog="c", table_schema="s",
-                                              table_name="t` ; DROP TABLE x; --", table_owner="o")])
-            return NS(collect=lambda: [{"format": "parquet"}])
-    ctx = NS(spark=FakeSpark(), cfg=NS(inventory_catalogs=["c"], inventory_max_tables=10))
+                return SimpleNamespace(
+                    collect=lambda: [
+                        SimpleNamespace(
+                            table_catalog="c", table_schema="s", table_name="t` ; DROP TABLE x; --", table_owner="o"
+                        )
+                    ]
+                )
+            return SimpleNamespace(collect=lambda: [{"format": "parquet"}])
+
+    ctx = SimpleNamespace(spark=FakeSpark(), cfg=SimpleNamespace(inventory_catalogs=["c"], inventory_max_tables=10))
     assert collect_table_inventory(ctx) is None
     assert seen[1] == "DESCRIBE DETAIL `c`.`s`.`t`` ; DROP TABLE x; --`"

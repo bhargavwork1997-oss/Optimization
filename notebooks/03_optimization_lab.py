@@ -40,6 +40,7 @@
 
 # COMMAND ----------
 
+import contextlib
 import datetime as dt
 import statistics
 import time
@@ -47,19 +48,17 @@ import time
 from dpo import governance
 
 dbutils.widgets.text("runs", "3", "Runs per query")
-RUNS = min(max(int(dbutils.widgets.get("runs")), 1), 10)   # bounded: each run scans ~6 M rows
-governance.authorize(spark, cfg, run_id="lab")           # creates tables: admins / operators only
-LAB = cfg.schema("sim")                                   # sandbox schema, never client data
+RUNS = min(max(int(dbutils.widgets.get("runs")), 1), 10)  # bounded: each run scans ~6 M rows
+governance.authorize(spark, cfg, run_id="lab")  # creates tables: admins / operators only
+LAB = cfg.schema("sim")  # sandbox schema, never client data
 
 try:
     spark.sql("SELECT 1 FROM samples.tpch.lineitem LIMIT 1").collect()
 except Exception as e:
     dbutils.notebook.exit(f"samples.tpch is not available in this workspace ({type(e).__name__}); lab skipped")
 
-try:
+with contextlib.suppress(Exception):  # not settable on serverless; medians smooth out caching
     spark.conf.set("spark.databricks.io.cache.enabled", "false")
-except Exception:
-    pass  # not settable on serverless; medians smooth out caching
 
 
 def timed(sql: str) -> float:
@@ -79,6 +78,7 @@ def experiment(name, rules, before_sql, after_sql):
     results.append((name, rules, b, a, round((b - a) / b * 100, 1) if b else None, dt.datetime.now(dt.timezone.utc)))
     print(f"{name}: before {b}s, after {a}s")
 
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -88,23 +88,28 @@ def experiment(name, rules, before_sql, after_sql):
 # COMMAND ----------
 
 spark.sql(f"CREATE OR REPLACE TABLE {LAB}.lab_lineitem_raw AS SELECT * FROM samples.tpch.lineitem")
-spark.sql(f"CREATE OR REPLACE TABLE {LAB}.lab_lineitem_opt CLUSTER BY (l_shipdate) AS SELECT * FROM samples.tpch.lineitem")
+spark.sql(
+    f"CREATE OR REPLACE TABLE {LAB}.lab_lineitem_opt CLUSTER BY (l_shipdate) AS SELECT * FROM samples.tpch.lineitem"
+)
 spark.sql(f"OPTIMIZE {LAB}.lab_lineitem_opt")
 
 experiment(
-    "clustering_and_range_filter", "R11,R16",
+    "clustering_and_range_filter",
+    "R11,R16",
     f"""SELECT l_returnflag, SUM(l_extendedprice) FROM {LAB}.lab_lineitem_raw
         WHERE year(l_shipdate) = 1995 GROUP BY 1""",
     f"""SELECT l_returnflag, SUM(l_extendedprice) FROM {LAB}.lab_lineitem_opt
         WHERE l_shipdate >= '1995-01-01' AND l_shipdate < '1996-01-01' GROUP BY 1""",
 )
 experiment(
-    "select_star_vs_projection", "R16",
+    "select_star_vs_projection",
+    "R16",
     f"SELECT * FROM {LAB}.lab_lineitem_raw WHERE l_quantity > 49",
     f"SELECT l_orderkey, l_quantity, l_extendedprice FROM {LAB}.lab_lineitem_raw WHERE l_quantity > 49",
 )
 experiment(
-    "broadcast_small_dim", "R12",
+    "broadcast_small_dim",
+    "R12",
     f"""SELECT n.n_name, SUM(l.l_extendedprice)
         FROM {LAB}.lab_lineitem_raw l
         JOIN samples.tpch.orders o   ON l.l_orderkey = o.o_orderkey
@@ -127,8 +132,10 @@ experiment(
 
 # COMMAND ----------
 
-schema = "experiment string, rule_ids string, before_sec double, after_sec double, improvement_pct double, run_at timestamp"
+schema = (
+    "experiment string, rule_ids string, before_sec double, after_sec double, improvement_pct double, run_at timestamp"
+)
 spark.createDataFrame(results, schema).write.mode("append").saveAsTable(cfg.t("gold", "lab_results"))
 for t in ("lab_lineitem_raw", "lab_lineitem_opt"):
-    spark.sql(f"DROP TABLE IF EXISTS {LAB}.{t}")          # do not leave 6 M-row copies behind
+    spark.sql(f"DROP TABLE IF EXISTS {LAB}.{t}")  # do not leave 6 M-row copies behind
 display(spark.table(cfg.t("gold", "lab_results")).orderBy("run_at", ascending=False))

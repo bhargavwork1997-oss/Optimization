@@ -1,0 +1,24 @@
+# Code standards for this repository, enforced in CI (ruff check + ruff format --check).
+#   ruff check .            # PEP 8, pyflakes, import order, naming, bugbear, pyupgrade, simplify, complexity
+#   ruff format .           # Black-compatible formatting
+line-length = 120
+target-version = "py310"                     # Databricks serverless and DBR 13.3 LTS+ run Python 3.10 or later
+extend-exclude = ["dashboards", "genie"]     # generated files
+builtins = ["dbutils", "spark", "display"]   # globals Databricks provides in every notebook
+
+[lint]
+select = ["E", "W", "F", "I", "N", "B", "UP", "SIM", "C4", "PIE", "RET", "C90"]
+ignore = [
+    "N812",   # `from pyspark.sql import functions as F` is the PySpark convention
+    "RET504", # `n = save(...); return n` reads better in pipeline stages
+]
+
+[lint.mccabe]
+max-complexity = 20
+
+[lint.per-file-ignores]
+# Notebooks get cfg, build_cfg, REPO_ROOT, ... from `%run ./_common` and import in the cell that needs them.
+"notebooks/*" = ["F821", "E402", "E501"]   # E501: markdown table rows in `# MAGIC` cells; code is held to 120 by the formatter
+
+[lint.isort]
+known-first-party = ["dpo", "conftest"]

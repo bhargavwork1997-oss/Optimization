@@ -1,6 +1,8 @@
-# Local / CI test environment. Python 3.11 (3.9-3.13 work; 3.14+ is not supported by PySpark 3.5). Java 17.
+# Local / CI test environment. Python 3.11 (3.10-3.13 work; 3.14+ is not supported by PySpark 3.5). Java 17.
 pyspark==3.5.3
 pytest>=8
 databricks-sdk>=0.40
 pyyaml>=6
 jsonschema>=4.20
+ruff==0.16.9
+mypy==2.3.1

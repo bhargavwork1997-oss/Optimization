@@ -64,8 +64,12 @@ display(spark.createDataFrame(rows, "schema_name string, principal string, privi
 
 # COMMAND ----------
 
-display(spark.createDataFrame(governance.audit_drift(spark, cfg, "audit", revoke=False),
-                              "schema_name string, principal string, privilege string, status string, error string"))
+display(
+    spark.createDataFrame(
+        governance.audit_drift(spark, cfg, "audit", revoke=False),
+        "schema_name string, principal string, privilege string, status string, error string",
+    )
+)
 
 # COMMAND ----------
 
@@ -76,9 +80,11 @@ display(spark.createDataFrame(governance.audit_drift(spark, cfg, "audit", revoke
 
 # COMMAND ----------
 
-display(spark.sql(f"""
+display(
+    spark.sql(f"""
   SELECT logged_at, principal, profile, action, status, detail, run_id
-  FROM {cfg.t('ops', 'audit_log')} ORDER BY logged_at DESC LIMIT 200"""))
+  FROM {cfg.t("ops", "audit_log")} ORDER BY logged_at DESC LIMIT 200""")
+)
 
 # COMMAND ----------
 
@@ -89,14 +95,16 @@ display(spark.sql(f"""
 # COMMAND ----------
 
 try:
-    display(spark.sql(f"""
+    display(
+        spark.sql(f"""
       SELECT event_time, user_identity.email AS principal, action_name,
              request_params.full_name_arg AS object_name, response.status_code
       FROM system.access.audit
       WHERE event_date >= current_date() - INTERVAL 30 DAYS
         AND service_name = 'unityCatalog'
         AND request_params.full_name_arg LIKE '{cfg.catalog}.{cfg.schema_prefix}%'
-      ORDER BY event_time DESC LIMIT 500"""))
+      ORDER BY event_time DESC LIMIT 500""")
+    )
 except Exception as e:
     print("system.access.audit not readable:", str(e).split("\n")[0])
 
@@ -123,7 +131,10 @@ display(spark.table(cfg.t("security", "access_map")))
 
 try:
     display(spark.sql(f"SHOW TBLPROPERTIES {cfg.t('ops', 'audit_log')} ('delta.appendOnly')"))
-    display(spark.sql(f"DESCRIBE HISTORY {cfg.t('ops', 'audit_log')}")
-            .select("version", "timestamp", "userName", "operation").limit(50))
+    display(
+        spark.sql(f"DESCRIBE HISTORY {cfg.t('ops', 'audit_log')}")
+        .select("version", "timestamp", "userName", "operation")
+        .limit(50)
+    )
 except Exception as e:
     print("audit log not available:", str(e).split("\n")[0])

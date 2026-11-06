@@ -39,7 +39,9 @@
 
 dbutils.widgets.dropdown("volume_scale", "large", ["medium", "large", "xl"], "Volume test scale")
 import time
+
 from pyspark.sql import functions as F
+
 from dpo import pipeline, synth, validation
 
 if cfg.governance["enforce"] and not cfg.governance.get("operators_can_create_schemas"):
@@ -48,9 +50,11 @@ if cfg.governance["enforce"] and not cfg.governance.get("operators_can_create_sc
 
 results, perf = [], []
 
+
 def record(suite, checks):
     for n, p, d in checks:
         results.append((suite, n, bool(p), d))
+
 
 # 1. chaos ------------------------------------------------------------------------
 c1 = build_cfg(schema_prefix="dpo_chaos_", source_mode="synthetic", end_date="2026-10-27")
@@ -62,25 +66,31 @@ record("chaos", validation.run_all_checks(ctx, injected=m["injected"]))
 c2 = build_cfg(schema_prefix="dpo_missing_", source_mode="synthetic", end_date="2026-10-27")
 synth.generate(spark, c2, "small", seed=3, end_date="2026-10-27", drop_sources=("node_timeline", "table_inventory"))
 ctx = pipeline.run_all(spark, c2, run_id="nb-missing")
-record("missing_sources", validation.run_all_checks(
-    ctx, skip_rules=("R01_COMPUTE_IDLE", "R02_COMPUTE_OVERSIZED", "R15_TABLE_SMALL_FILES")))
+record(
+    "missing_sources",
+    validation.run_all_checks(ctx, skip_rules=("R01_COMPUTE_IDLE", "R02_COMPUTE_OVERSIZED", "R15_TABLE_SMALL_FILES")),
+)
 
 # 3. empty window ---------------------------------------------------------------------
 c3 = build_cfg(schema_prefix="dpo_missing_", source_mode="synthetic", end_date="2031-01-01")
 ctx = pipeline.run_all(spark, c3, run_id="nb-empty")
-record("empty_window", [("all_stages_succeeded", all(l["status"] == "SUCCESS" for l in ctx.log), str(ctx.log))])
+record("empty_window", [("all_stages_succeeded", all(entry["status"] == "SUCCESS" for entry in ctx.log), str(ctx.log))])
 
 # 4. volume ---------------------------------------------------------------------------
 scale = dbutils.widgets.get("volume_scale")
-c4 = build_cfg(schema_prefix="dpo_scale_", source_mode="synthetic", end_date="2026-10-27",
-               lookback_days={"medium": 30, "large": 60, "xl": 90}[scale])
+c4 = build_cfg(
+    schema_prefix="dpo_scale_",
+    source_mode="synthetic",
+    end_date="2026-10-27",
+    lookback_days={"medium": 30, "large": 60, "xl": 90}[scale],
+)
 t = time.time()
 m = synth.generate(spark, c4, scale, seed=99, end_date="2026-10-27")
 gen_s = time.time() - t
 ctx = pipeline.run_all(spark, c4, run_id=f"nb-scale-{scale}")
 rows = sum(m["tables"].values())
-for l in ctx.log:
-    perf.append((scale, l["stage"], float(l["seconds"]), rows))
+for entry in ctx.log:
+    perf.append((scale, entry["stage"], float(entry["seconds"]), rows))
 perf.append((scale, "generate", gen_s, rows))
 record(f"volume_{scale}", validation.run_all_checks(ctx))
 
@@ -93,11 +103,13 @@ record(f"volume_{scale}", validation.run_all_checks(ctx))
 # COMMAND ----------
 
 # report ------------------------------------------------------------------------------
-res = (spark.createDataFrame(results, "suite string, check string, passed boolean, detail string")
-       .withColumn("run_ts", F.current_timestamp()))
+res = spark.createDataFrame(results, "suite string, check string, passed boolean, detail string").withColumn(
+    "run_ts", F.current_timestamp()
+)
 res.write.mode("append").saveAsTable(cfg.t("ops", "test_results"))
-pdf = (spark.createDataFrame(perf, "scale string, stage string, seconds double, sim_rows long")
-       .withColumn("run_ts", F.current_timestamp()))
+pdf = spark.createDataFrame(perf, "scale string, stage string, seconds double, sim_rows long").withColumn(
+    "run_ts", F.current_timestamp()
+)
 pdf.write.mode("append").saveAsTable(cfg.t("ops", "perf_results"))
 display(res)
 display(pdf)
